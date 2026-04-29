@@ -1,0 +1,32 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "fastaudit"
+description = "A lightweight execution guard for running LLM-generated Python in a normal Python process."
+
+dynamic = ["version"]
+readme = "README.md"
+requires-python = ">=3.12"
+license = { text = "Apache-2.0" }
+authors = [{ name = "Answer.AI" }]
+classifiers = [ "Programming Language :: Python :: 3", "Programming Language :: Python :: 3 :: Only", ]
+
+dependencies = [ "fastcore", ]
+
+[project.optional-dependencies]
+dev = [ "pytest", "orjson", "fastship", "build", "twine", ]
+
+[project.urls]
+Homepage = "https://github.com/AnswerDotAI/fastaudit"
+
+[tool.setuptools.dynamic]
+version = { attr = "fastaudit.__version__" }
+
+[tool.setuptools.packages.find]
+include = ["fastaudit"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+

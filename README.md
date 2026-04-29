@@ -1,0 +1,182 @@
+# fastaudit
+
+`fastaudit` is a lightweight execution guard for running LLM-generated Python in a normal Python process.
+
+It is not intended to be a hardened adversarial sandbox. Its purpose is to stop accidental damage from overly broad file operations, unexpected subprocess calls, and tool use that reaches outside approved working directories.
+
+The core mechanism is Python's audit hook system, with `sys.monitoring` used to raise audit events for non-stdlib C calls. `fastaudit` installs these hooks once, then enables permission checks only while an execution context is active.
+
+`fastaudit` requires Python 3.12 or newer.
+
+## Why this exists
+
+LLM-generated code is usually helpful, but sometimes too determined. If a command fails, an assistant may try another route; if a path is wrong, it may broaden the search; if a tool exists, it may use it without fully understanding its side effects.
+
+`fastaudit` is designed for that case.
+
+It helps with:
+
+- blocking subprocess and process-escape operations unless explicitly allowed
+- allowing writes only under approved roots
+- allowing broad read access where appropriate
+- making permission failures clear and immediate
+- letting trusted user-provided tools run while ordinary generated code stays checked
+- avoiding global audit state leaks across async tasks
+
+It deliberately does not try to defeat malicious code running in the same interpreter.
+
+## Audit hook categorization
+
+The audit hook is designed as a lightweight guardrail for LLM/tool-generated code, not as a hardened security sandbox against malicious code. The goal is to prevent accidental or over-broad filesystem mutation outside approved working directories: e.g. deleting files in the wrong project, writing into a user’s home directory, or spawning subprocesses unexpectedly. It assumes the surrounding process, user account, and pre-existing filesystem layout are trusted, and that the code being checked is not actively trying to exploit races, pre-planted symlinks, or CPython internals.
+
+The design keeps the common path simple and cheap. Dangerous process-escape events such as subprocess execution are denied outright. Filesystem write/delete events are allowed only when the relevant parent directory is inside a precomputed allowlist, since most mutations are really changes to directory entries. For destination-only operations such as copy, only the destination parent matters; for move/rename/link-style operations, both paths are checked because both filesystem locations may be affected. Read-only operations are generally ignored, and file-descriptor-based truncation is allowed on the assumption that the path policy was enforced when the descriptor was opened. This gives practical protection against accidental damage while avoiding the complexity and cost of pretending to be a fully adversarial sandbox.
+
+Symlinks are treated as part of the trusted filesystem setup. The hook’s path checks focus on the parent directories of mutations, which is the right model for operations that create, remove, or rename directory entries. This means an existing symlink inside an allowed directory may still point outside the allowed roots; that is acceptable under this threat model because the user controls the workspace layout and is assumed not to pre-place hostile links. To avoid making that assumption worse, symlink and hard-link creation should be restricted: the new link’s parent must be allowed, and the link target should either be denied or required to resolve inside an allowed root.
+
+## Threat model
+
+`fastaudit` assumes:
+
+- the user, workspace, and pre-existing filesystem layout are trusted
+- code is LLM-generated or LLM-directed, not actively hostile
+- accidental overreach is the main risk
+- rich user tools may need access that ordinary generated code should not have
+- Solveit or the host application controls the execution wrapper
+
+It does not assume:
+
+- Python introspection is unavailable
+- frames, closures, or modules are impossible to inspect
+- same-process execution can provide a hard security boundary
+- OS-level sandboxing is unnecessary for adversarial workloads
+
+For adversarial code, use a subprocess, container, VM, or OS-level policy.
+
+## Audit scope
+
+Auditing is opt-in per logical task. The audit hook is registered globally, but permission checks only run while `audit_perms()` is active. This matters for async code. A global boolean or counter would leak audit state between unrelated coroutines. A `ContextVar` lets audit state follow the logical task instead.
+
+Auditing is opt-in per logical task: the hook only enforces while `audit_perms()` is active, with state stored in a `ContextVar` rather than a global flag. This is the smallest change that makes audit scope follow async tasks correctly. A global boolean or counter would leak audit state across unrelated coroutines whenever one audited task awaits, so a `gather()` of mixed audited and unaudited work would behave incoherently — peer tasks would either inherit checks they should not have, or run unchecked while an audited peer is awaiting. `ContextVar` gives logical scoping: child tasks inherit at creation time, nested contexts restore cleanly via tokens, and the guard follows execution flow rather than scheduler order. Threads are denied in the audit sandbox since context variables otherwise is not maintained.
+
+The checker is built once inside a closure rather than read from module globals on every event. Allowed roots are normalized at construction time, the event-classification sets are converted to `frozenset`, and the helpers used in the hot path — `realpath`, `dirname`, `fsdecode`, `os.sep` — are captured as local names. Nothing the hook depends on lives in a mutable global that a generated cell could clear, replace, or reassign. This is not a security barrier against introspection or frame walking; it is a deliberate effort to remove the easy, accidental disabling paths that an enthusiastic LLM is most likely to take when retrying after a `PermissionError`.
+
+## Permission model
+
+The policy classifies audit events into a few groups:
+
+- events denied outright
+- events where the first path argument is checked
+- events where the destination path is checked
+- events where both source and destination paths are checked
+- special cases such as `open`, `os.truncate`, and sensitive `object.__setattr__`
+
+Writes and filesystem mutations are allowed only when the relevant parent directory is inside an approved root.
+
+Reads are generally allowed.
+
+Subprocess creation and similar process escapes are denied by default.
+
+Non-stdlib C calls raise a `fastaudit.call` audit event while `audit_perms()` is active. Python calls and stdlib calls are ignored by the call monitor.
+
+### get/set attr hooks
+
+The `object.__setattr__` audit event fires only for a small fixed set of "sensitive" attribute assignments, not for general attribute setting. On types/classes, it fires when setting `__name__`, `__qualname__`, `__module__`, `__bases__`, `__doc__`, or `__type_params__` — these go through `check_set_special_type_attr` in `Objects/typeobject.c`. The `__class__` reassignment on any object is also audited, via `object_set_class` in the same file. On function objects, assignments to `__code__`, `__defaults__`, and `__kwdefaults__` are audited, via the relevant setters in `Objects/funcobject.c`.
+
+All other attribute assignments — including ordinary `C.x = 1` on a class, instance attribute assignment, and even some dunders like `__abstractmethods__` and `__annotations__` (which write directly via `PyDict_SetItem`) — bypass the audit hook entirely. This is why `@dataclass` triggers an event (it sets `cls.__doc__`) and `namedtuple` triggers one (it sets `cls.__module__`), while `class C: pass; C.x = 1; C.foo = lambda self: None` is silent. The authoritative list lives in the CPython source at [`Objects/typeobject.c`](https://github.com/python/cpython/blob/v3.12.0/Objects/typeobject.c) and [`Objects/funcobject.c`](https://github.com/python/cpython/blob/v3.12.0/Objects/funcobject.c); the public docs only describe the event as firing for "certain sensitive attribute assignments" without enumerating them.
+
+## Host policy
+
+Some user-provided tools need permissions that ordinary generated code should not have. For instance, a search tool may need to call `rg`, or a helper may need to spawn a tightly controlled subprocess.
+
+`fastaudit` does not define that policy itself. Host code can pass `before_deny`, which is called after `fastaudit` decides an operation should be blocked and before `PermissionError` is raised.
+
+The callback receives the event name, audit arguments, the first non-`fastaudit` stack frame, the error message, and the current host data. Returning a truthy value allows the operation. Returning a falsey value denies it.
+
+For non-stdlib C calls, host code can also pass `on_call`, which runs before `fastaudit.call` is raised. It receives the caller, callee, function object, code object, bytecode offset, and current host data. It can return `False` to suppress the audit event for that call, or `sys.monitoring.DISABLE` to disable that monitored call site.
+
+The optional `data` argument is stored inside the audit closure and passed to both callbacks. A host can build mutable policy state outside the sandbox, pass a frozen snapshot to `mk_audit`, and later update that snapshot with `audit_perms.set_data(...)`. Calling `set_data` while `audit_perms()` is active is denied.
+
+## API sketch
+
+```python
+audit_perms = mk_audit(['/tmp', os.getcwd()], before_deny=allow_trusted_tool, data=frozenset(allowed))
+
+with audit_perms():
+    exec(code, restricted_globals)
+```
+
+## Implementation notes
+
+The checker should avoid relying on mutable globals during enforcement.
+
+At construction time, bind or freeze:
+
+- approved roots
+- audit event sets
+- write flags
+- path helpers such as `realpath`, `dirname`, and `fsdecode`
+- frame lookup helper
+- call-monitor helpers and callbacks
+
+This prevents the most likely accidental disabling paths, such as clearing a global deny set or replacing a helper function.
+
+The implementation still does not claim to be secure against deliberate frame walking or introspection.
+
+## Testing
+
+Tests should cover:
+
+- read operations outside approved roots
+- write operations inside approved roots
+- write operations outside approved roots
+- subprocess denial
+- host policy escape through `before_deny`
+- async task isolation
+- nested `audit_perms()` contexts
+- restoration after exceptions
+
+Example checks:
+
+```python
+touch(inside)
+open('/etc/passwd').close()
+
+with audit_perms():
+    open('/etc/passwd').close()
+    touch(inside)
+    with expect_fail(PermissionError): open(outside, 'w').close()
+    with expect_fail(PermissionError): subprocess.run(['echo', 'hi'])
+
+os.remove(inside)
+```
+
+For host policy, add a `before_deny` callback that allows a specific otherwise-denied event, then confirm neighboring events are still denied.
+
+## Limitations
+
+`fastaudit` does not provide a hard security boundary.
+
+Known limitations:
+
+- same-process Python code can inspect a lot of runtime state
+- pre-existing writable file descriptors may bypass path-open checks
+- C extensions and native code are outside Python-level control
+- host callbacks can do anything their implementation permits
+- thread support is intentionally restricted unless explicitly designed for
+
+These limitations are acceptable for a guardrail system aimed at LLM-directed execution. They are not acceptable for hostile code.
+
+## Design principle
+
+The goal is not to make escape impossible. The goal is to make the safe path easy, the risky path explicit, and accidental overreach fail early with a useful error.
+
+## Release
+
+1) Ensure your GitHub issues are labeled (`bug`, `enhancement`, `breaking`).
+2) Run:
+
+```bash
+ship-gh
+ship-pypi
+ship-bump
+```
