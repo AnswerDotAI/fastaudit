@@ -19,6 +19,7 @@ def test_audit_blocks(tmp_path):
     inside2 = join(okdest, 'audit-test-2.txt')
     inside3 = join(okdest, 'audit-test-3.txt')
     outside = expanduser('~/audit-test-outside.txt')
+    permissive = mk_audit([expanduser('~')], monitor_calls=False)
 
     with working_directory(dotdest), mk_audit((okdest,'.'))():
         # Sensitive function mutation is blocked.
@@ -59,6 +60,10 @@ def test_audit_blocks(tmp_path):
 
         # Non-stdlib native calls are blocked.
         with expect_fail(PermissionError): orjson.dumps({'a': 1})
+
+        # Audit policy cannot be replaced from inside the sandbox.
+        with expect_fail(PermissionError): mk_audit([expanduser('~')], monitor_calls=False)
+        with expect_fail(PermissionError), permissive(): pass
 
 
 def test_callbacks(tmp_path):

@@ -1,5 +1,6 @@
 import os, sys
 from fastcore.utils import *
+from collections import namedtuple
 from contextlib import contextmanager
 from contextvars import ContextVar
 
@@ -22,19 +23,19 @@ _audit_win = {'_winapi.CreateFile','_winapi.CreateProcess','_winapi.OpenProcess'
     'winreg.CreateKey','winreg.DeleteKey','winreg.DeleteValue','winreg.SetValue','winreg.LoadKey','winreg.SaveKey',
     'winreg.DisableReflectionKey','winreg.EnableReflectionKey'}
 _audit_deny = _audit_proc|_audit_runtime|_audit_ctypes|_audit_win
+_AuditCfg = namedtuple('AuditCfg', 'oks before_deny on_call data monitor_calls')
+_state_attr = '_fastaudit_state'
 
 
-def mk_audit(oks, before_deny=None, on_call=None, data=None, tool_id=3, monitor_calls=True):
-    on = ContextVar('audit_on', default=False)
-    oks = tuple('.' if o=='.' else os.path.realpath(os.fsdecode(o)) for o in oks)
+def _new_state():
+    ctx = ContextVar('fastaudit_cfg', default=None)
     write_flags = os.O_WRONLY|os.O_RDWR|os.O_CREAT|os.O_TRUNC|os.O_APPEND
     audit_1st,audit_dst,audit_both = map(frozenset, (_audit_1st,_audit_dst,_audit_both))
-    audit_deny = frozenset(_audit_deny|{'fastaudit.call','audit_perms.set_data'})
+    audit_deny = frozenset(_audit_deny|{'fastaudit.call','audit_perms.set_config','audit_perms.set_data'})
     audit_all = audit_deny|audit_1st|audit_dst|audit_both|{'open','os.chdir','os.truncate','object.__setattr__'}
     realpath,dirname,fsdecode,sep,getframe = os.path.realpath,os.path.dirname,os.fsdecode,os.sep,sys._getframe
     mon,audit,stdlib = getattr(sys, 'monitoring', None),sys.audit,frozenset(sys.stdlib_module_names)
-    if monitor_calls and not mon: raise RuntimeError('monitor_calls=True requires Python 3.12+ sys.monitoring')
-    if on_call and not monitor_calls: raise RuntimeError('on_call requires monitor_calls=True')
+    state = {'tool_id':None}
 
     def frame_name(f): return f"{f.f_globals.get('__name__')}.{f.f_code.co_qualname}"
 
@@ -58,26 +59,26 @@ def mk_audit(oks, before_deny=None, on_call=None, data=None, tool_id=3, monitor_
             if not frame_name(f).startswith('fastaudit.'): return f
             f = f.f_back
 
-    def deny(event, args, msg):
-        if before_deny and before_deny(event, args, external_frame(), msg, data): return
+    def deny(cfg, event, args, msg):
+        if cfg.before_deny and cfg.before_deny(event, args, external_frame(), msg, cfg.data): return
         raise PermissionError(msg)
 
-    def ok_path(p, parent=False):
+    def ok_path(cfg, p, parent=False):
         try:
             p = fsdecode(p)
             if parent: p = dirname(p) or '.'
             rp = realpath(p or '.')
         except (OSError,TypeError,ValueError): return False
         cur = realpath('.')
-        return any(rp==(cur if o=='.' else o) or rp.startswith((cur if o=='.' else o)+sep) for o in oks)
+        return any(rp==(cur if o=='.' else o) or rp.startswith((cur if o=='.' else o)+sep) for o in cfg.oks)
 
-    def chk(event, args):
+    def chk(cfg, event, args):
         if event not in audit_all: return
         errstr = f"Audit: {event} blocked in sandbox"
-        if event in audit_deny: return deny(event, args, errstr)
+        if event in audit_deny: return deny(cfg, event, args, errstr)
         if event=='object.__setattr__':
             if args[1] in ('__doc__','__module__'): return
-            return deny(event, args, errstr)
+            return deny(cfg, event, args, errstr)
         ps = []
         if event=='open':
             path,mode,flags = args
@@ -85,7 +86,7 @@ def mk_audit(oks, before_deny=None, on_call=None, data=None, tool_id=3, monitor_
             if mode is None and not flags & write_flags: return
             ps = [path]
         elif event=='os.chdir':
-            if not ok_path(args[0]): return deny(event, args, f"{event} {args[0]!r} not in {oks}")
+            if not ok_path(cfg, args[0]): return deny(cfg, event, args, f"{event} {args[0]!r} not in {cfg.oks}")
             return
         elif event=='os.truncate':
             if isinstance(args[0],int): return
@@ -94,22 +95,24 @@ def mk_audit(oks, before_deny=None, on_call=None, data=None, tool_id=3, monitor_
         elif event in audit_dst: ps = [args[1]]
         elif event in audit_both: ps = args[:2]
         for p in ps:
-            if not ok_path(p, parent=True): deny(event, args, f"{event} {p!r} not in {oks}")
+            if not ok_path(cfg, p, parent=True): deny(cfg, event, args, f"{event} {p!r} not in {cfg.oks}")
 
     def hook(event, args):
-        if not on.get(): return
-        try: chk(event, args)
+        cfg = ctx.get()
+        if cfg is None: return
+        try: chk(cfg, event, args)
         except PermissionError as e:
             e.__traceback__ = None
             raise
 
     def call_cb(code, off, fn, arg0):
         if code is call_cb.__code__ or hasattr(fn, '__code__') or is_stdlib(fn): return mon.DISABLE
-        if not on.get(): return
+        cfg = ctx.get()
+        if cfg is None or not cfg.monitor_calls: return
         caller,callee = frame_name(getframe(1)),func_name(fn)
         if not callee: return
-        if on_call:
-            res = on_call(caller, callee, fn, code, off, data)
+        if cfg.on_call:
+            res = cfg.on_call(caller, callee, fn, code, off, cfg.data)
             if res is mon.DISABLE: return mon.DISABLE
             if res is False: return
         try: audit('fastaudit.call', caller, callee)
@@ -117,8 +120,11 @@ def mk_audit(oks, before_deny=None, on_call=None, data=None, tool_id=3, monitor_
             e.__traceback__ = None
             raise
 
-    def install_call_monitor():
-        if not monitor_calls: return
+    def install_call_monitor(tool_id):
+        if not mon: raise RuntimeError('monitor_calls=True requires Python 3.12+ sys.monitoring')
+        if (old:=state['tool_id']) is not None:
+            if old!=tool_id: raise RuntimeError(f'fastaudit already uses sys.monitoring tool id {old}')
+            return
         if (tool:=mon.get_tool(tool_id)) == 'fastaudit':
             mon.set_events(tool_id, 0)
             mon.register_callback(tool_id, mon.events.CALL, None)
@@ -127,22 +133,40 @@ def mk_audit(oks, before_deny=None, on_call=None, data=None, tool_id=3, monitor_
         mon.use_tool_id(tool_id, 'fastaudit')
         mon.register_callback(tool_id, mon.events.CALL, call_cb)
         mon.set_events(tool_id, mon.events.CALL)
+        state['tool_id'] = tool_id
 
-    install_call_monitor()
+    def mk_audit_(oks, before_deny=None, on_call=None, data=None, tool_id=3, monitor_calls=True):
+        audit('audit_perms.set_config', oks)
+        if on_call and not monitor_calls: raise RuntimeError('on_call requires monitor_calls=True')
+        if monitor_calls: install_call_monitor(tool_id)
+        oks = tuple('.' if o=='.' else realpath(fsdecode(o)) for o in oks)
+        cfg = _AuditCfg(oks, before_deny, on_call, data, monitor_calls)
 
-    @contextmanager
-    def cm():
-        tok = on.set(True)
-        if monitor_calls: mon.restart_events()
-        try: yield
-        finally: on.reset(tok)
+        @contextmanager
+        def cm():
+            nonlocal cfg
+            old = ctx.get()
+            if old is not cfg: audit('audit_perms.set_config', cfg)
+            tok = ctx.set(cfg)
+            if cfg.monitor_calls: mon.restart_events()
+            try: yield
+            finally: ctx.reset(tok)
 
-    def set_data(d):
-        nonlocal data
-        audit('audit_perms.set_data', d)
-        data = d
-        return data
+        def set_data(d):
+            nonlocal cfg
+            audit('audit_perms.set_data', d)
+            cfg = cfg._replace(data=d)
+            return cfg.data
 
-    cm.set_data = set_data
+        cm.set_data = set_data
+        return cm
+
     sys.addaudithook(hook)
-    return cm
+    return mk_audit_
+
+
+_mk_audit = getattr(sys, _state_attr, None)
+if _mk_audit is None: sys._state_attr = _mk_audit = _new_state()
+
+def mk_audit(oks, before_deny=None, on_call=None, data=None, tool_id=3, monitor_calls=True):
+    return _mk_audit(oks, before_deny, on_call, data, tool_id, monitor_calls)
