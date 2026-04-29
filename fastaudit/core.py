@@ -24,7 +24,7 @@ _audit_win = {'_winapi.CreateFile','_winapi.CreateProcess','_winapi.OpenProcess'
 _audit_deny = _audit_proc|_audit_runtime|_audit_ctypes|_audit_win
 
 
-def mk_audit(oks, before_deny=None, on_call=None, data=None, tool_id=3):
+def mk_audit(oks, before_deny=None, on_call=None, data=None, tool_id=3, monitor_calls=True):
     on = ContextVar('audit_on', default=False)
     oks = tuple(os.path.realpath(os.fsdecode(o)) for o in oks)
     write_flags = os.O_WRONLY|os.O_RDWR|os.O_CREAT|os.O_TRUNC|os.O_APPEND
@@ -32,7 +32,9 @@ def mk_audit(oks, before_deny=None, on_call=None, data=None, tool_id=3):
     audit_deny = frozenset(_audit_deny|{'fastaudit.call','audit_perms.set_data'})
     audit_all = audit_deny|audit_1st|audit_dst|audit_both|{'open','os.truncate','object.__setattr__'}
     realpath,dirname,fsdecode,sep,getframe = os.path.realpath,os.path.dirname,os.fsdecode,os.sep,sys._getframe
-    mon,audit,stdlib = sys.monitoring,sys.audit,frozenset(sys.stdlib_module_names)
+    mon,audit,stdlib = getattr(sys, 'monitoring', None),sys.audit,frozenset(sys.stdlib_module_names)
+    if monitor_calls and not mon: raise RuntimeError('monitor_calls=True requires Python 3.12+ sys.monitoring')
+    if on_call and not monitor_calls: raise RuntimeError('on_call requires monitor_calls=True')
 
     def frame_name(f): return f"{f.f_globals.get('__name__')}.{f.f_code.co_qualname}"
 
@@ -108,19 +110,23 @@ def mk_audit(oks, before_deny=None, on_call=None, data=None, tool_id=3):
             e.__traceback__ = None
             raise
 
-    if (tool:=mon.get_tool(tool_id)) == 'fastaudit':
-        mon.set_events(tool_id, 0)
-        mon.register_callback(tool_id, mon.events.CALL, None)
-        mon.free_tool_id(tool_id)
-    elif tool: raise RuntimeError(f'sys.monitoring tool id {tool_id} is already used by {tool!r}')
-    mon.use_tool_id(tool_id, 'fastaudit')
-    mon.register_callback(tool_id, mon.events.CALL, call_cb)
-    mon.set_events(tool_id, mon.events.CALL)
+    def install_call_monitor():
+        if not monitor_calls: return
+        if (tool:=mon.get_tool(tool_id)) == 'fastaudit':
+            mon.set_events(tool_id, 0)
+            mon.register_callback(tool_id, mon.events.CALL, None)
+            mon.free_tool_id(tool_id)
+        elif tool: raise RuntimeError(f'sys.monitoring tool id {tool_id} is already used by {tool!r}')
+        mon.use_tool_id(tool_id, 'fastaudit')
+        mon.register_callback(tool_id, mon.events.CALL, call_cb)
+        mon.set_events(tool_id, mon.events.CALL)
+
+    install_call_monitor()
 
     @contextmanager
     def cm():
         tok = on.set(True)
-        mon.restart_events()
+        if monitor_calls: mon.restart_events()
         try: yield
         finally: on.reset(tok)
 

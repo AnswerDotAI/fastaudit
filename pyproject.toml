@@ -8,7 +8,7 @@ description = "A lightweight execution guard for running LLM-generated Python in
 
 dynamic = ["version"]
 readme = "README.md"
-requires-python = ">=3.12"
+requires-python = ">=3.10"
 license = { text = "Apache-2.0" }
 authors = [{ name = "Answer.AI" }]
 classifiers = [ "Programming Language :: Python :: 3", "Programming Language :: Python :: 3 :: Only", ]
@@ -29,4 +29,3 @@ include = ["fastaudit"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-

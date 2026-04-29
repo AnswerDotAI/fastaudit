@@ -4,9 +4,9 @@
 
 It is not intended to be a hardened adversarial sandbox. Its purpose is to stop accidental damage from overly broad file operations, unexpected subprocess calls, and tool use that reaches outside approved working directories.
 
-The core mechanism is Python's audit hook system, with `sys.monitoring` used to raise audit events for non-stdlib native calls. `mk_audit()` installs those hooks, then enables permission checks only while its execution context is active.
+The core mechanism is Python's audit hook system. On Python 3.12 and newer, `sys.monitoring` is also used to raise audit events for non-stdlib native calls. `mk_audit()` installs those hooks, then enables permission checks only while its execution context is active.
 
-`fastaudit` requires Python 3.12 or newer.
+`fastaudit` requires Python 3.10 or newer. Native call monitoring requires Python 3.12 or newer and is enabled by default. Pass `monitor_calls=False` to use audit-hook-only mode on Python 3.10/3.11 or to avoid monitoring overhead.
 
 ## Why this exists
 
@@ -54,7 +54,7 @@ For adversarial code, use a subprocess, container, VM, or OS-level policy.
 
 ## Audit scope
 
-Auditing is opt-in per logical task. The audit hook and call monitor are registered globally, but permission checks only run while `audit_perms()` is active. This matters for async code. A global boolean or counter would leak audit state between unrelated coroutines whenever one audited task awaits. A `ContextVar` gives logical scoping: child tasks inherit at creation time, nested contexts restore cleanly via tokens, and the guard follows execution flow rather than scheduler order. Threads are denied in the audit sandbox since context variables otherwise are not maintained.
+Auditing is opt-in per logical task. The audit hook and optional call monitor are registered globally, but permission checks only run while `audit_perms()` is active. This matters for async code. A global boolean or counter would leak audit state between unrelated coroutines whenever one audited task awaits. A `ContextVar` gives logical scoping: child tasks inherit at creation time, nested contexts restore cleanly via tokens, and the guard follows execution flow rather than scheduler order. Threads are denied in the audit sandbox since context variables otherwise are not maintained.
 
 The checker is built once inside a closure rather than read from module globals on every event. Allowed roots are normalized at construction time, the event-classification sets are converted to `frozenset`, and the helpers used in the hot path — `realpath`, `dirname`, `fsdecode`, `os.sep` — are captured as local names. Nothing the hook depends on lives in a mutable global that a generated cell could clear, replace, or reassign. This is not a security barrier against introspection or frame walking; it is a deliberate effort to remove the easy, accidental disabling paths that an enthusiastic LLM is most likely to take when retrying after a `PermissionError`.
 
@@ -74,7 +74,7 @@ Reads are generally allowed.
 
 Subprocess creation and similar process escapes are denied by default.
 
-Non-stdlib native calls raise a `fastaudit.call` audit event while `audit_perms()` is active. Python calls and stdlib calls are ignored by the call monitor. The context manager calls `sys.monitoring.restart_events()` on entry so monitored call sites disabled before the context are seen again inside it.
+Non-stdlib native calls raise a `fastaudit.call` audit event while `audit_perms()` is active when `monitor_calls=True`. Python calls and stdlib calls are ignored by the call monitor. The context manager calls `sys.monitoring.restart_events()` on entry so monitored call sites disabled before the context are seen again inside it. With `monitor_calls=False`, only normal Python audit-hook events are checked.
 
 ### get/set attr hooks
 
@@ -94,7 +94,7 @@ before_deny(event, args, frame, msg, data)
 
 The callback receives the event name, audit arguments, the first non-`fastaudit` stack frame, the error message, and the current host data. Returning a truthy value allows the operation. Returning a falsey value denies it. Exceptions from the callback propagate.
 
-For non-stdlib native calls, host code can also pass `on_call`, which runs before `fastaudit.call` is raised:
+For non-stdlib native calls, host code can also pass `on_call`, which runs before `fastaudit.call` is raised. `on_call` requires `monitor_calls=True`:
 
 ```python
 on_call(caller, callee, fn, code, off, data)
@@ -104,7 +104,7 @@ It receives the caller, callee, function object, code object, bytecode offset, a
 
 The optional `data` argument is stored inside the audit closure and passed to both callbacks. A host can build mutable policy state outside the sandbox, pass a frozen snapshot to `mk_audit`, and later update that snapshot with `audit_perms.set_data(...)`. Calling `set_data` while `audit_perms()` is active is denied.
 
-`mk_audit()` uses `sys.monitoring` tool id `3` by default. Pass `tool_id=...` if the host already uses that id.
+`mk_audit()` uses `sys.monitoring` tool id `3` by default when call monitoring is enabled. Pass `tool_id=...` if the host already uses that id.
 
 ## API sketch
 
@@ -115,6 +115,8 @@ with audit_perms():
     exec(code, restricted_globals)
 
 audit_perms.set_data(frozenset(new_allowed))
+
+audit_perms = mk_audit(['/tmp'], monitor_calls=False)  # audit hooks only
 ```
 
 ## Implementation notes
@@ -159,4 +161,3 @@ ship-gh
 ship-pypi
 ship-bump
 ```
-

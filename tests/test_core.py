@@ -63,6 +63,14 @@ def test_callbacks(tmp_path):
         with expect_fail(PermissionError): subprocess.run(['ls'])
 
 
+def test_monitor_calls_can_be_disabled(tmp_path):
+    with expect_fail(RuntimeError): mk_audit([tmp_path], on_call=lambda *args: None, monitor_calls=False)
+    with mk_audit([tmp_path], monitor_calls=False)():
+        # Audit-hook checks still run without native call monitoring.
+        with expect_fail(PermissionError): subprocess.run(['echo', 'hi'])
+        assert orjson.dumps({'a': 1}) == b'{"a":1}'
+
+
 def test_implement_allow_list(tmp_path):
     "A brief demo of creating an `allow()` system"
     def trusted_echo(): return subprocess.run(['echo', 'hi'], capture_output=True, text=True)
@@ -88,4 +96,3 @@ def test_implement_allow_list(tmp_path):
     audit_perms.set_data(frozenset())
     with audit_perms():
         with expect_fail(PermissionError): trusted_echo()
-
