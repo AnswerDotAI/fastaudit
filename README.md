@@ -74,6 +74,8 @@ Reads are generally allowed.
 
 Subprocess creation and similar process escapes are denied by default.
 
+The allowed root `'.'` is dynamic: it means the current directory at the time of each checked operation. This lets a sandbox follow allowed `chdir` calls into child directories. `os.chdir` itself is checked against the destination directory, not the destination's parent.
+
 Non-stdlib native calls raise a `fastaudit.call` audit event while `audit_perms()` is active when `monitor_calls=True`. Python calls and stdlib calls are ignored by the call monitor. The context manager calls `sys.monitoring.restart_events()` on entry so monitored call sites disabled before the context are seen again inside it. With `monitor_calls=False`, only normal Python audit-hook events are checked.
 
 ### get/set attr hooks

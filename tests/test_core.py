@@ -1,4 +1,5 @@
 import orjson, os, shutil, subprocess, traceback
+from fastcore.foundation import working_directory
 from fastcore.test import expect_fail
 from fastaudit.core import mk_audit
 from os.path import join,realpath,expanduser
@@ -8,13 +9,18 @@ def touch(p, s='x'):
     with open(p, 'w') as f: f.write(s)
 
 def test_audit_blocks(tmp_path):
-    okdest = realpath(tmp_path)
+    start = os.getcwd()
+    dotdest = tmp_path/'dotdest'
+    okdest = tmp_path/'okdest'
+    (dotdest/'child').mkdir(parents=True)
+    okdest.mkdir()
+    okdest = realpath(okdest)
     inside = join(okdest, 'audit-test.txt')
     inside2 = join(okdest, 'audit-test-2.txt')
     inside3 = join(okdest, 'audit-test-3.txt')
     outside = expanduser('~/audit-test-outside.txt')
 
-    with mk_audit((okdest,))():
+    with working_directory(dotdest), mk_audit((okdest,'.'))():
         # Sensitive function mutation is blocked.
         def f(): pass
         with expect_fail(PermissionError): f.__code__ = f.__code__
@@ -39,6 +45,12 @@ def test_audit_blocks(tmp_path):
         with expect_fail(PermissionError): os.rename(inside2, outside)
         os.remove(inside2)
         with expect_fail(PermissionError): subprocess.run(['echo', 'hi'])
+
+        # "." allows writes under the current directory and chdir checks the destination.
+        touch('dot-inside.txt')
+        touch('child/nested.txt')
+        with expect_fail(PermissionError): touch('../sibling.txt')
+        with expect_fail(PermissionError): os.chdir(start)
 
         # fastaudit frames are removed from tracebacks.
         try: subprocess.run(['echo', 'hi'])

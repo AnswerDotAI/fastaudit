@@ -3,7 +3,7 @@ from fastcore.utils import *
 from contextlib import contextmanager
 from contextvars import ContextVar
 
-_audit_1st = {'os.chdir','os.chmod','os.chown','os.chflags','os.mkdir','os.remove','os.removexattr','os.rmdir','os.setxattr',
+_audit_1st = {'os.chmod','os.chown','os.chflags','os.mkdir','os.remove','os.removexattr','os.rmdir','os.setxattr',
     'shutil.chown','shutil.make_archive','shutil.rmtree','sqlite3.connect','tempfile.mkdtemp','tempfile.mkstemp'}
 _audit_dst = {'shutil.copyfile','shutil.copymode','shutil.copystat','shutil.copytree','sqlite3.load_extension'}
 _audit_both = {'os.link','os.rename','os.symlink','shutil.move','shutil.unpack_archive'}
@@ -26,11 +26,11 @@ _audit_deny = _audit_proc|_audit_runtime|_audit_ctypes|_audit_win
 
 def mk_audit(oks, before_deny=None, on_call=None, data=None, tool_id=3, monitor_calls=True):
     on = ContextVar('audit_on', default=False)
-    oks = tuple(os.path.realpath(os.fsdecode(o)) for o in oks)
+    oks = tuple('.' if o=='.' else os.path.realpath(os.fsdecode(o)) for o in oks)
     write_flags = os.O_WRONLY|os.O_RDWR|os.O_CREAT|os.O_TRUNC|os.O_APPEND
     audit_1st,audit_dst,audit_both = map(frozenset, (_audit_1st,_audit_dst,_audit_both))
     audit_deny = frozenset(_audit_deny|{'fastaudit.call','audit_perms.set_data'})
-    audit_all = audit_deny|audit_1st|audit_dst|audit_both|{'open','os.truncate','object.__setattr__'}
+    audit_all = audit_deny|audit_1st|audit_dst|audit_both|{'open','os.chdir','os.truncate','object.__setattr__'}
     realpath,dirname,fsdecode,sep,getframe = os.path.realpath,os.path.dirname,os.fsdecode,os.sep,sys._getframe
     mon,audit,stdlib = getattr(sys, 'monitoring', None),sys.audit,frozenset(sys.stdlib_module_names)
     if monitor_calls and not mon: raise RuntimeError('monitor_calls=True requires Python 3.12+ sys.monitoring')
@@ -62,10 +62,14 @@ def mk_audit(oks, before_deny=None, on_call=None, data=None, tool_id=3, monitor_
         if before_deny and before_deny(event, args, external_frame(), msg, data): return
         raise PermissionError(msg)
 
-    def parent_ok(p):
-        try: rp = realpath(dirname(fsdecode(p)) or '.')
+    def ok_path(p, parent=False):
+        try:
+            p = fsdecode(p)
+            if parent: p = dirname(p) or '.'
+            rp = realpath(p or '.')
         except (OSError,TypeError,ValueError): return False
-        return any(rp==o or rp.startswith(o+sep) for o in oks)
+        cur = realpath('.')
+        return any(rp==(cur if o=='.' else o) or rp.startswith((cur if o=='.' else o)+sep) for o in oks)
 
     def chk(event, args):
         if event not in audit_all: return
@@ -80,6 +84,9 @@ def mk_audit(oks, before_deny=None, on_call=None, data=None, tool_id=3, monitor_
             if isinstance(mode,str) and not set('wax+') & set(mode): return
             if mode is None and not flags & write_flags: return
             ps = [path]
+        elif event=='os.chdir':
+            if not ok_path(args[0]): return deny(event, args, f"{event} {args[0]!r} not in {oks}")
+            return
         elif event=='os.truncate':
             if isinstance(args[0],int): return
             ps = [args[0]]
@@ -87,7 +94,7 @@ def mk_audit(oks, before_deny=None, on_call=None, data=None, tool_id=3, monitor_
         elif event in audit_dst: ps = [args[1]]
         elif event in audit_both: ps = args[:2]
         for p in ps:
-            if not parent_ok(p): deny(event, args, f"{event} {p!r} not in {oks}")
+            if not ok_path(p, parent=True): deny(event, args, f"{event} {p!r} not in {oks}")
 
     def hook(event, args):
         if not on.get(): return
