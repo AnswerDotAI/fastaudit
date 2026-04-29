@@ -4,7 +4,7 @@
 
 It is not intended to be a hardened adversarial sandbox. Its purpose is to stop accidental damage from overly broad file operations, unexpected subprocess calls, and tool use that reaches outside approved working directories.
 
-The core mechanism is Python's audit hook system, with `sys.monitoring` used to raise audit events for non-stdlib C calls. `fastaudit` installs these hooks once, then enables permission checks only while an execution context is active.
+The core mechanism is Python's audit hook system, with `sys.monitoring` used to raise audit events for non-stdlib native calls. `mk_audit()` installs those hooks, then enables permission checks only while its execution context is active.
 
 `fastaudit` requires Python 3.12 or newer.
 
@@ -20,7 +20,7 @@ It helps with:
 - allowing writes only under approved roots
 - allowing broad read access where appropriate
 - making permission failures clear and immediate
-- letting trusted user-provided tools run while ordinary generated code stays checked
+- letting host policy callbacks allow trusted tools while ordinary generated code stays checked
 - avoiding global audit state leaks across async tasks
 
 It deliberately does not try to defeat malicious code running in the same interpreter.
@@ -54,9 +54,7 @@ For adversarial code, use a subprocess, container, VM, or OS-level policy.
 
 ## Audit scope
 
-Auditing is opt-in per logical task. The audit hook is registered globally, but permission checks only run while `audit_perms()` is active. This matters for async code. A global boolean or counter would leak audit state between unrelated coroutines. A `ContextVar` lets audit state follow the logical task instead.
-
-Auditing is opt-in per logical task: the hook only enforces while `audit_perms()` is active, with state stored in a `ContextVar` rather than a global flag. This is the smallest change that makes audit scope follow async tasks correctly. A global boolean or counter would leak audit state across unrelated coroutines whenever one audited task awaits, so a `gather()` of mixed audited and unaudited work would behave incoherently — peer tasks would either inherit checks they should not have, or run unchecked while an audited peer is awaiting. `ContextVar` gives logical scoping: child tasks inherit at creation time, nested contexts restore cleanly via tokens, and the guard follows execution flow rather than scheduler order. Threads are denied in the audit sandbox since context variables otherwise is not maintained.
+Auditing is opt-in per logical task. The audit hook and call monitor are registered globally, but permission checks only run while `audit_perms()` is active. This matters for async code. A global boolean or counter would leak audit state between unrelated coroutines whenever one audited task awaits. A `ContextVar` gives logical scoping: child tasks inherit at creation time, nested contexts restore cleanly via tokens, and the guard follows execution flow rather than scheduler order. Threads are denied in the audit sandbox since context variables otherwise are not maintained.
 
 The checker is built once inside a closure rather than read from module globals on every event. Allowed roots are normalized at construction time, the event-classification sets are converted to `frozenset`, and the helpers used in the hot path — `realpath`, `dirname`, `fsdecode`, `os.sep` — are captured as local names. Nothing the hook depends on lives in a mutable global that a generated cell could clear, replace, or reassign. This is not a security barrier against introspection or frame walking; it is a deliberate effort to remove the easy, accidental disabling paths that an enthusiastic LLM is most likely to take when retrying after a `PermissionError`.
 
@@ -76,7 +74,7 @@ Reads are generally allowed.
 
 Subprocess creation and similar process escapes are denied by default.
 
-Non-stdlib C calls raise a `fastaudit.call` audit event while `audit_perms()` is active. Python calls and stdlib calls are ignored by the call monitor.
+Non-stdlib native calls raise a `fastaudit.call` audit event while `audit_perms()` is active. Python calls and stdlib calls are ignored by the call monitor. The context manager calls `sys.monitoring.restart_events()` on entry so monitored call sites disabled before the context are seen again inside it.
 
 ### get/set attr hooks
 
@@ -88,13 +86,25 @@ All other attribute assignments — including ordinary `C.x = 1` on a class, ins
 
 Some user-provided tools need permissions that ordinary generated code should not have. For instance, a search tool may need to call `rg`, or a helper may need to spawn a tightly controlled subprocess.
 
-`fastaudit` does not define that policy itself. Host code can pass `before_deny`, which is called after `fastaudit` decides an operation should be blocked and before `PermissionError` is raised.
+`fastaudit` does not define that policy itself. Host code can pass `before_deny`, which is called after `fastaudit` decides an operation should be blocked and before `PermissionError` is raised:
 
-The callback receives the event name, audit arguments, the first non-`fastaudit` stack frame, the error message, and the current host data. Returning a truthy value allows the operation. Returning a falsey value denies it.
+```python
+before_deny(event, args, frame, msg, data)
+```
 
-For non-stdlib C calls, host code can also pass `on_call`, which runs before `fastaudit.call` is raised. It receives the caller, callee, function object, code object, bytecode offset, and current host data. It can return `False` to suppress the audit event for that call, or `sys.monitoring.DISABLE` to disable that monitored call site.
+The callback receives the event name, audit arguments, the first non-`fastaudit` stack frame, the error message, and the current host data. Returning a truthy value allows the operation. Returning a falsey value denies it. Exceptions from the callback propagate.
+
+For non-stdlib native calls, host code can also pass `on_call`, which runs before `fastaudit.call` is raised:
+
+```python
+on_call(caller, callee, fn, code, off, data)
+```
+
+It receives the caller, callee, function object, code object, bytecode offset, and current host data. It can return `False` to suppress the audit event for that call, or `sys.monitoring.DISABLE` to disable that monitored call site. Exceptions from the callback propagate.
 
 The optional `data` argument is stored inside the audit closure and passed to both callbacks. A host can build mutable policy state outside the sandbox, pass a frozen snapshot to `mk_audit`, and later update that snapshot with `audit_perms.set_data(...)`. Calling `set_data` while `audit_perms()` is active is denied.
+
+`mk_audit()` uses `sys.monitoring` tool id `3` by default. Pass `tool_id=...` if the host already uses that id.
 
 ## API sketch
 
@@ -103,6 +113,8 @@ audit_perms = mk_audit(['/tmp', os.getcwd()], before_deny=allow_trusted_tool, da
 
 with audit_perms():
     exec(code, restricted_globals)
+
+audit_perms.set_data(frozenset(new_allowed))
 ```
 
 ## Implementation notes
@@ -118,39 +130,7 @@ At construction time, bind or freeze:
 - frame lookup helper
 - call-monitor helpers and callbacks
 
-This prevents the most likely accidental disabling paths, such as clearing a global deny set or replacing a helper function.
-
-The implementation still does not claim to be secure against deliberate frame walking or introspection.
-
-## Testing
-
-Tests should cover:
-
-- read operations outside approved roots
-- write operations inside approved roots
-- write operations outside approved roots
-- subprocess denial
-- host policy escape through `before_deny`
-- async task isolation
-- nested `audit_perms()` contexts
-- restoration after exceptions
-
-Example checks:
-
-```python
-touch(inside)
-open('/etc/passwd').close()
-
-with audit_perms():
-    open('/etc/passwd').close()
-    touch(inside)
-    with expect_fail(PermissionError): open(outside, 'w').close()
-    with expect_fail(PermissionError): subprocess.run(['echo', 'hi'])
-
-os.remove(inside)
-```
-
-For host policy, add a `before_deny` callback that allows a specific otherwise-denied event, then confirm neighboring events are still denied.
+This prevents the most likely accidental disabling paths, such as clearing a global deny set or replacing a helper function. The implementation still does not claim to be secure against deliberate frame walking or introspection.
 
 ## Limitations
 
@@ -160,7 +140,6 @@ Known limitations:
 
 - same-process Python code can inspect a lot of runtime state
 - pre-existing writable file descriptors may bypass path-open checks
-- C extensions and native code are outside Python-level control
 - host callbacks can do anything their implementation permits
 - thread support is intentionally restricted unless explicitly designed for
 
@@ -180,3 +159,4 @@ ship-gh
 ship-pypi
 ship-bump
 ```
+
