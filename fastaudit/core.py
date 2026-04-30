@@ -41,7 +41,10 @@ def _new_state():
 
     def func_mod(fn):
         mod = getattr(fn, '__module__', None)
-        if not mod and (s:=getattr(fn, '__self__', None)): mod = getattr(type(s), '__module__', None)
+        cls = getattr(fn, '__objclass__', None)
+        if not mod and cls is not None: mod = getattr(cls, '__module__', None)
+        s = getattr(fn, '__self__', None)
+        if not mod and s is not None: mod = getattr(type(s), '__module__', None)
         return mod
 
     def func_name(fn):
@@ -52,6 +55,10 @@ def _new_state():
     def is_stdlib(fn):
         mod = func_mod(fn)
         return bool(mod) and mod.split('.', 1)[0] in stdlib
+
+    def callee_is_python(fn):
+        if hasattr(fn, '__code__') or isinstance(fn, type): return True
+        return hasattr(getattr(type(fn), '__call__', None), '__code__')
 
     def external_frame():
         f = getframe()
@@ -74,7 +81,7 @@ def _new_state():
 
     def chk(cfg, event, args):
         if event not in audit_all: return
-        errstr = f"Audit: {event} blocked in sandbox"
+        errstr = f"Audit: {event} blocked in sandbox with args: {args}"
         if event in audit_deny: return deny(cfg, event, args, errstr)
         if event=='object.__setattr__':
             if args[1] in ('__doc__','__module__'): return
@@ -106,7 +113,7 @@ def _new_state():
             raise
 
     def call_cb(code, off, fn, arg0):
-        if code is call_cb.__code__ or hasattr(fn, '__code__') or is_stdlib(fn): return mon.DISABLE
+        if code is call_cb.__code__ or callee_is_python(fn) or is_stdlib(fn): return mon.DISABLE
         cfg = ctx.get()
         if cfg is None or not cfg.monitor_calls: return
         caller,callee = frame_name(getframe(1)),func_name(fn)
@@ -170,3 +177,4 @@ if _mk_audit is None: sys._state_attr = _mk_audit = _new_state()
 
 def mk_audit(oks, before_deny=None, on_call=None, data=None, tool_id=3, monitor_calls=True):
     return _mk_audit(oks, before_deny, on_call, data, tool_id, monitor_calls)
+

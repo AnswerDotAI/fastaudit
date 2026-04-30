@@ -146,6 +146,7 @@ Known limitations:
 - pre-existing writable file descriptors may bypass path-open checks
 - host callbacks can do anything their implementation permits
 - thread support is intentionally restricted unless explicitly designed for
+- The `CALL` event in `sys.monitoring` does not fire for operators invoked via dedicated bytecode opcodes — `BINARY_OP` (`a + b`), `BINARY_SUBSCR` (`a[i]`), comparisons, etc. These dispatch directly to the C-level numeric/subscript/compare slots, which aren't "calls" in PEP 669's model. Explicit dunder invocations (`a.__add__(b)`) do fire CALL normally.
 
 These limitations are acceptable for a guardrail system aimed at LLM-directed execution. They are not acceptable for hostile code.
 

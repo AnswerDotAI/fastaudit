@@ -1,4 +1,4 @@
-import orjson, os, shutil, subprocess, traceback
+import numpy as np, orjson, os, shutil, subprocess, sys, traceback
 from fastcore.foundation import working_directory
 from fastcore.test import expect_fail
 from fastaudit.core import mk_audit
@@ -58,6 +58,12 @@ def test_audit_blocks(tmp_path):
         except PermissionError as e: frames = traceback.extract_tb(e.__traceback__)
         assert not [f for f in frames if f.filename.endswith('fastaudit/core.py')]
 
+        # Python classes and callable instances are not treated as native calls.
+        class PyCallable:
+            def __init__(self): super().__init__()
+            def __call__(self): return 'ok'
+        assert PyCallable()() == 'ok'
+
         # Non-stdlib native calls are blocked.
         with expect_fail(PermissionError): orjson.dumps({'a': 1})
 
@@ -68,11 +74,14 @@ def test_audit_blocks(tmp_path):
 
 def test_callbacks(tmp_path):
     def before_deny(event, args, frame, msg, data): return event=='subprocess.Popen' and args[1][:1]==['echo']
-    def on_call(caller, callee, fn, code, off, data): return False if callee=='orjson.dumps' else None
+    def on_call(caller, callee, fn, code, off, data):
+        if callee=='orjson.dumps': return False
+        if callee.startswith('numpy.'): return sys.monitoring.DISABLE
 
     with mk_audit([tmp_path], before_deny=before_deny, on_call=on_call)():
         # Host callbacks can allow specific native calls…
         assert orjson.dumps({'a': 1}) == b'{"a":1}'
+        assert np.array([1, 2, 3]).sum() == 6
         # …and audit events
         res = subprocess.run(['echo', 'hi'], capture_output=True, text=True)
         assert res.stdout == 'hi\n'
