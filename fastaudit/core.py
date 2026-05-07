@@ -146,7 +146,7 @@ def _new_state():
         audit('audit_perms.set_config', oks)
         if on_call and not monitor_calls: raise RuntimeError('on_call requires monitor_calls=True')
         if monitor_calls: install_call_monitor(tool_id)
-        oks = tuple('.' if o=='.' else realpath(fsdecode(o)) for o in oks)
+        oks = tuple('.' if o=='.' else realpath(os.path.expanduser(fsdecode(o))) for o in oks)
         cfg = _AuditCfg(oks, before_deny, on_call, data, monitor_calls)
 
         @contextmanager
