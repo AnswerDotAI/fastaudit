@@ -172,9 +172,12 @@ def _new_state():
     return mk_audit_
 
 
-_mk_audit = getattr(sys, _state_attr, None)
-if _mk_audit is None: sys._state_attr = _mk_audit = _new_state()
+def _get_mk_audit():
+    mk_audit_ = getattr(sys, _state_attr, None)
+    if mk_audit_ is None:
+        mk_audit_ = _new_state()
+        setattr(sys, _state_attr, mk_audit_)
+    return mk_audit_
 
 def mk_audit(oks, before_deny=None, on_call=None, data=None, tool_id=3, monitor_calls=True):
-    return _mk_audit(oks, before_deny, on_call, data, tool_id, monitor_calls)
-
+    return _get_mk_audit()(oks, before_deny, on_call, data, tool_id, monitor_calls)
