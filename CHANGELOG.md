@@ -1,5 +1,12 @@
 <!-- do not remove -->
 
+## 0.1.1
+
+### New Features
+
+- Resolve inherited C method modules and allow `__defaults__` setattr ([#7](https://github.com/AnswerDotAI/fastaudit/issues/7))
+
+
 ## 0.1.0
 
 ### New Features
