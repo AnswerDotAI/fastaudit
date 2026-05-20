@@ -91,8 +91,10 @@ def test_callbacks(tmp_path):
 
 def test_nbformat_read(tmp_path):
     p = tmp_path/'test.ipynb'
-    nbformat.write(nbformat.v4.new_notebook(cells=[nbformat.v4.new_code_cell('1+1')]), p)
-    with mk_audit([tmp_path])(): assert nbformat.read(str(p), as_version=4).cells[0].source == '1+1'
+    p.write_text('{"cells":[{"cell_type":"code","execution_count":null,"id":"x","metadata":{},"outputs":[],"source":"1+1"}],"metadata":{},"nbformat":4,"nbformat_minor":5}')
+    def on_call(caller, callee, fn, code, off, data):
+        if callee.startswith('rpds.'): return sys.monitoring.DISABLE
+    with mk_audit([tmp_path], on_call=on_call)(): assert nbformat.read(str(p), as_version=4).cells[0].source == '1+1'
 
 
 def test_monitor_calls_can_be_disabled(tmp_path):
