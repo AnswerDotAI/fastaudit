@@ -39,12 +39,19 @@ def _new_state():
 
     def frame_name(f): return f"{f.f_globals.get('__name__')}.{f.f_code.co_qualname}"
 
+    def owner_mod(fn, obj):
+        "Find inherited C method owners, e.g. NotebookNode.get -> dict.get."
+        nm = getattr(fn, '__name__', None)
+        if not nm: return
+        for cls in type(obj).__mro__:
+            if nm in cls.__dict__: return getattr(cls, '__module__', None)
+
     def func_mod(fn):
         mod = getattr(fn, '__module__', None)
         cls = getattr(fn, '__objclass__', None)
         if not mod and cls is not None: mod = getattr(cls, '__module__', None)
         s = getattr(fn, '__self__', None)
-        if not mod and s is not None: mod = getattr(type(s), '__module__', None)
+        if not mod and s is not None: mod = owner_mod(fn, s) or getattr(type(s), '__module__', None)
         return mod
 
     def func_name(fn):
@@ -84,7 +91,7 @@ def _new_state():
         errstr = f"Audit: {event} blocked in sandbox with args: {args}"
         if event in audit_deny: return deny(cfg, event, args, errstr)
         if event=='object.__setattr__':
-            if args[1] in ('__doc__','__module__'): return
+            if args[1] in ('__defaults__', '__doc__','__module__'): return
             return deny(cfg, event, args, errstr)
         ps = []
         if event=='open':

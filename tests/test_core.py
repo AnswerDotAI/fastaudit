@@ -1,4 +1,4 @@
-import numpy as np, orjson, os, shutil, subprocess, sys, traceback
+import nbformat, numpy as np, orjson, os, shutil, subprocess, sys, traceback
 from fastcore.foundation import working_directory
 from fastcore.test import expect_fail
 from fastaudit.core import mk_audit
@@ -87,6 +87,12 @@ def test_callbacks(tmp_path):
         assert res.stdout == 'hi\n'
         # Neighboring subprocess commands remain blocked.
         with expect_fail(PermissionError): subprocess.run(['ls'])
+
+
+def test_nbformat_read(tmp_path):
+    p = tmp_path/'test.ipynb'
+    nbformat.write(nbformat.v4.new_notebook(cells=[nbformat.v4.new_code_cell('1+1')]), p)
+    with mk_audit([tmp_path])(): assert nbformat.read(str(p), as_version=4).cells[0].source == '1+1'
 
 
 def test_monitor_calls_can_be_disabled(tmp_path):
