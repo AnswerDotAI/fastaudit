@@ -1,5 +1,12 @@
 <!-- do not remove -->
 
+## 0.1.2
+
+### New Features
+
+- Add `fastaudit_safe_native` entry point group to allowlist trusted native modules ([#8](https://github.com/AnswerDotAI/fastaudit/issues/8))
+
+
 ## 0.1.1
 
 ### New Features
