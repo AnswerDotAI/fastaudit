@@ -4,7 +4,7 @@
 
 It is not intended to be a hardened adversarial sandbox. Its purpose is to stop accidental damage from overly broad file operations, unexpected subprocess calls, and tool use that reaches outside approved working directories.
 
-The core mechanism is Python's audit hook system. The first `mk_audit()` call installs one process-wide audit hook. On Python 3.12 and newer, `sys.monitoring` is also used to raise audit events for non-stdlib native calls. `mk_audit()` creates an audit context, then enables permission checks only while that execution context is active.
+The core mechanism is Python's audit hook system. The first `mk_audit()` call installs one process-wide audit hook. On Python 3.12 and newer, `sys.monitoring` is also used to raise audit events for non-stdlib native calls, except for native modules declared safe through `fastaudit_safe_native` entry point metadata. `mk_audit()` creates an audit context, then enables permission checks only while that execution context is active.
 
 `fastaudit` requires Python 3.10 or newer. Native call monitoring requires Python 3.12 or newer and is enabled by default. Pass `monitor_calls=False` to use audit-hook-only mode on Python 3.10/3.11 or to avoid monitoring overhead.
 
@@ -76,7 +76,16 @@ Subprocess creation and similar process escapes are denied by default.
 
 The allowed root `'.'` is dynamic: it means the current directory at the time of each checked operation. This lets a sandbox follow allowed `chdir` calls into child directories. `os.chdir` itself is checked against the destination directory, not the destination's parent.
 
-Non-stdlib native calls raise a `fastaudit.call` audit event while `audit_perms()` is active when `monitor_calls=True`. Python calls and stdlib calls are ignored by the call monitor. The context manager calls `sys.monitoring.restart_events()` on entry so monitored call sites disabled before the context are seen again inside it. With `monitor_calls=False`, only normal Python audit-hook events are checked.
+Non-stdlib native calls raise a `fastaudit.call` audit event while `audit_perms()` is active when `monitor_calls=True`. Python calls, stdlib calls, and safe native entry point prefixes are ignored by the call monitor. The context manager calls `sys.monitoring.restart_events()` on entry so monitored call sites disabled before the context are seen again inside it. With `monitor_calls=False`, only normal Python audit-hook events are checked.
+
+Native modules can declare safe call prefixes with the `fastaudit_safe_native` entry point group:
+
+```toml
+[project.entry-points.fastaudit_safe_native]
+mymarkdown = "mymarkdown._rust"
+```
+
+`fastaudit` reads the entry point values as module prefixes. It does not load the entry points or import the target modules. Missing or unloadable modules are harmless. A value of `mymarkdown._rust` allows native calls from `mymarkdown._rust` and `mymarkdown._rust.*`, but not `mymarkdown.io`.
 
 ### get/set attr hooks
 
@@ -96,7 +105,7 @@ before_deny(event, args, frame, msg, data)
 
 The callback receives the event name, audit arguments, the first non-`fastaudit` stack frame, the error message, and the current host data. Returning a truthy value allows the operation. Returning a falsey value denies it. Exceptions from the callback propagate.
 
-For non-stdlib native calls, host code can also pass `on_call`, which runs before `fastaudit.call` is raised. `on_call` requires `monitor_calls=True`:
+For other non-stdlib native calls, host code can also pass `on_call`, which runs before `fastaudit.call` is raised. `on_call` requires `monitor_calls=True`:
 
 ```python
 on_call(caller, callee, fn, code, off, data)
@@ -128,6 +137,7 @@ The hook should avoid relying on mutable globals during enforcement.
 At construction time, bind or freeze:
 
 - approved roots
+- safe native module prefixes from `fastaudit_safe_native` entry points
 - audit event sets
 - write flags
 - path helpers such as `realpath`, `dirname`, and `fsdecode`

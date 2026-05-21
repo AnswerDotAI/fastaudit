@@ -3,6 +3,7 @@ from fastcore.utils import *
 from collections import namedtuple
 from contextlib import contextmanager
 from contextvars import ContextVar
+from importlib.metadata import entry_points
 
 _audit_1st = {'os.chmod','os.chown','os.chflags','os.mkdir','os.remove','os.removexattr','os.rmdir','os.setxattr',
     'shutil.chown','shutil.make_archive','shutil.rmtree','sqlite3.connect','tempfile.mkdtemp','tempfile.mkstemp'}
@@ -35,6 +36,7 @@ def _new_state():
     audit_all = audit_deny|audit_1st|audit_dst|audit_both|{'open','os.chdir','os.truncate','object.__setattr__'}
     realpath,dirname,fsdecode,sep,getframe = os.path.realpath,os.path.dirname,os.fsdecode,os.sep,sys._getframe
     mon,audit,stdlib = getattr(sys, 'monitoring', None),sys.audit,frozenset(sys.stdlib_module_names)
+    safe_native = tuple(sorted({ep.value.strip() for ep in entry_points(group='fastaudit_safe_native') if ep.value.strip()}))
     state = {'tool_id':None}
 
     def frame_name(f): return f"{f.f_globals.get('__name__')}.{f.f_code.co_qualname}"
@@ -54,14 +56,14 @@ def _new_state():
         if not mod and s is not None: mod = owner_mod(fn, s) or getattr(type(s), '__module__', None)
         return mod
 
-    def func_name(fn):
-        mod = func_mod(fn)
+    def func_name(fn, mod=None):
+        if mod is None: mod = func_mod(fn)
         nm = getattr(fn, '__qualname__', getattr(fn, '__name__', None))
         return f'{mod}.{nm}' if mod and nm else None
 
-    def is_stdlib(fn):
-        mod = func_mod(fn)
-        return bool(mod) and mod.split('.', 1)[0] in stdlib
+    def is_stdlib_mod(mod): return bool(mod) and mod.split('.', 1)[0] in stdlib
+
+    def is_safe_native_mod(mod): return bool(mod) and any(mod==p or mod.startswith(p+'.') for p in safe_native)
 
     def callee_is_python(fn):
         if hasattr(fn, '__code__') or isinstance(fn, type): return True
@@ -120,10 +122,12 @@ def _new_state():
             raise
 
     def call_cb(code, off, fn, arg0):
-        if code is call_cb.__code__ or callee_is_python(fn) or is_stdlib(fn): return mon.DISABLE
+        if code is call_cb.__code__ or callee_is_python(fn): return mon.DISABLE
+        mod = func_mod(fn)
+        if is_stdlib_mod(mod) or is_safe_native_mod(mod): return mon.DISABLE
         cfg = ctx.get()
         if cfg is None or not cfg.monitor_calls: return
-        caller,callee = frame_name(getframe(1)),func_name(fn)
+        caller,callee = frame_name(getframe(1)),func_name(fn, mod)
         if not callee: return
         if cfg.on_call:
             res = cfg.on_call(caller, callee, fn, code, off, cfg.data)

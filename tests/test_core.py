@@ -1,9 +1,18 @@
-import nbformat, numpy as np, orjson, os, shutil, subprocess, sys, traceback
+import nbformat, numpy as np, orjson, os, pytest, shutil, subprocess, sys, traceback
 from fastcore.foundation import working_directory
 from fastcore.test import expect_fail
 from fastaudit.core import mk_audit
 from os.path import join,realpath,expanduser
 
+
+@pytest.fixture(scope='session', autouse=True)
+def _safe_native_entrypoints(tmp_path_factory):
+    p = tmp_path_factory.mktemp('safe_native')/'safe-0.dist-info'
+    p.mkdir()
+    (p/'entry_points.txt').write_text('[fastaudit_safe_native]\norjson = orjson\nrpds = rpds\n')
+    sys.path.insert(0, str(p.parent))
+    yield
+    sys.path.remove(str(p.parent))
 
 def touch(p, s='x'):
     with open(p, 'w') as f: f.write(s)
@@ -64,8 +73,9 @@ def test_audit_blocks(tmp_path):
             def __call__(self): return 'ok'
         assert PyCallable()() == 'ok'
 
-        # Non-stdlib native calls are blocked.
-        with expect_fail(PermissionError): orjson.dumps({'a': 1})
+        # Safe native entry points are allowed; other non-stdlib native calls are blocked.
+        assert orjson.dumps({'a': 1}) == b'{"a":1}'
+        with expect_fail(PermissionError): np.array([1, 2, 3]).sum()
 
         # Audit policy cannot be replaced from inside the sandbox.
         with expect_fail(PermissionError): mk_audit([expanduser('~')], monitor_calls=False)
@@ -75,12 +85,10 @@ def test_audit_blocks(tmp_path):
 def test_callbacks(tmp_path):
     def before_deny(event, args, frame, msg, data): return event=='subprocess.Popen' and args[1][:1]==['echo']
     def on_call(caller, callee, fn, code, off, data):
-        if callee=='orjson.dumps': return False
         if callee.startswith('numpy.'): return sys.monitoring.DISABLE
 
     with mk_audit([tmp_path], before_deny=before_deny, on_call=on_call)():
-        # Host callbacks can allow specific native calls…
-        assert orjson.dumps({'a': 1}) == b'{"a":1}'
+        # Host callbacks can allow native calls beyond the entry-point allowlist.
         assert np.array([1, 2, 3]).sum() == 6
         # …and audit events
         res = subprocess.run(['echo', 'hi'], capture_output=True, text=True)
@@ -92,9 +100,9 @@ def test_callbacks(tmp_path):
 def test_nbformat_read(tmp_path):
     p = tmp_path/'test.ipynb'
     p.write_text('{"cells":[{"cell_type":"code","execution_count":null,"id":"x","metadata":{},"outputs":[],"source":"1+1"}],"metadata":{},"nbformat":4,"nbformat_minor":5}')
-    def on_call(caller, callee, fn, code, off, data):
-        if callee.startswith('rpds.'): return sys.monitoring.DISABLE
-    with mk_audit([tmp_path], on_call=on_call)(): assert nbformat.read(str(p), as_version=4).cells[0].source == '1+1'
+    with mk_audit([tmp_path])():
+        # Native dependencies can declare safe call prefixes through entry points.
+        assert nbformat.read(str(p), as_version=4).cells[0].source == '1+1'
 
 
 def test_monitor_calls_can_be_disabled(tmp_path):

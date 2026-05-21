@@ -21,6 +21,11 @@ dev = [ "pytest", "orjson", "numpy", "nbformat", "fastship", "build", "twine", ]
 [project.urls]
 Homepage = "https://github.com/AnswerDotAI/fastaudit"
 
+[project.entry-points.fastaudit_safe_native]
+numpy = "numpy"
+orjson = "orjson"
+rpds = "rpds"
+
 [tool.setuptools.dynamic]
 version = { attr = "fastaudit.__version__" }
 
