@@ -87,7 +87,7 @@ def test_audit_blocks(tmp_path):
 
 
 def test_callbacks(tmp_path):
-    def before_deny(event, args, frame, msg, data): return event=='subprocess.Popen' and args[1][:1]==['echo']
+    def before_deny(event, args, frame, msg, data): return event=='subprocess.Popen' and args[1][:1]==['echo'] or event=='fastaudit.ddl' and args==('ok',)
     def on_call(caller, callee, fn, code, off, data):
         if callee.startswith('exhash.'): return sys.monitoring.DISABLE
 
@@ -96,7 +96,12 @@ def test_callbacks(tmp_path):
         f = tmp_path/'exhash.txt'
         exhash_file(str(f), ['0|0000|a\nx'], inplace=True)
         assert f.read_text() == 'x\n'
-        # …and audit events
+        # Host callbacks can also allow unknown or package-provided audit events.
+        sys.audit('http.client.connect', None, 'example.com', 80)
+        sys.audit('fastaudit.ddl', 'ok')
+        with expect_fail(PermissionError): sys.audit('fastaudit.dml', 'delete')
+
+        # Host callbacks can allow audit events.
         res = subprocess.run(['echo', 'hi'], capture_output=True, text=True)
         assert res.stdout == 'hi\n'
         # Neighboring subprocess commands remain blocked.

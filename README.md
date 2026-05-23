@@ -62,11 +62,12 @@ The hook is built once inside a closure rather than read from module globals on 
 
 The policy classifies audit events into a few groups:
 
-- events denied outright
+- events explicitly allowed
 - events where the first path argument is checked
 - events where the destination path is checked
 - events where both source and destination paths are checked
 - special cases such as `open`, `os.truncate`, and sensitive `object.__setattr__`
+- everything else, including package-defined audit events, is denied unless `before_deny` allows it
 
 Writes and filesystem mutations are allowed only when the relevant parent directory is inside an approved root.
 
@@ -105,6 +106,10 @@ before_deny(event, args, frame, msg, data)
 
 The callback receives the event name, audit arguments, the first non-`fastaudit` stack frame, the error message, and the current host data. Returning a truthy value allows the operation. Returning a falsey value denies it. Exceptions from the callback propagate.
 
+Audit events that are not in `fastaudit`'s explicit allow or path-check lists also go through `before_deny`. This lets libraries expose their own audit events without needing to depend on `fastaudit`; the host decides which of those events to allow.
+
+Internally, allowed audit event entries ending in `.` are treated as prefixes, so an allow entry such as `http.client.` covers `http.client.connect` and `http.client.send`.
+
 For other non-stdlib native calls, host code can also pass `on_call`, which runs before `fastaudit.call` is raised. `on_call` requires `monitor_calls=True`:
 
 ```python
@@ -142,7 +147,7 @@ At construction time, bind or freeze:
 
 - approved roots
 - safe native module prefixes from `fastaudit_safe_native` entry points
-- audit event sets
+- allowed and checked audit event sets
 - write flags
 - path helpers such as `realpath`, `dirname`, and `fsdecode`
 - frame lookup helper

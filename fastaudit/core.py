@@ -5,25 +5,23 @@ from contextlib import contextmanager
 from contextvars import ContextVar
 from importlib.metadata import entry_points
 
-_audit_1st = {'os.chmod','os.chown','os.chflags','os.mkdir','os.remove','os.removexattr','os.rmdir','os.setxattr',
-    'shutil.chown','shutil.make_archive','shutil.rmtree','sqlite3.connect','tempfile.mkdtemp','tempfile.mkstemp'}
-_audit_dst = {'shutil.copyfile','shutil.copymode','shutil.copystat','shutil.copytree','sqlite3.load_extension'}
-_audit_both = {'os.link','os.rename','os.symlink','shutil.move','shutil.unpack_archive'}
+_audit_1st = {'os.chmod', 'os.chown', 'os.chflags', 'os.mkdir', 'os.remove', 'os.removexattr', 'os.rmdir', 'os.setxattr',
+    'shutil.chown', 'shutil.make_archive', 'shutil.rmtree', 'sqlite3.connect', 'tempfile.mkdtemp', 'tempfile.mkstemp'}
+_audit_dst = {'shutil.copyfile', 'shutil.copymode', 'shutil.copystat', 'shutil.copytree', 'sqlite3.load_extension'}
+_audit_both = {'os.link', 'os.rename', 'os.symlink', 'shutil.move', 'shutil.unpack_archive'}
 
-_audit_proc = {'subprocess.Popen','os.system','os.exec','os.spawn','os.posix_spawn','os.startfile','os.startfile/2',
-    'os.kill','os.killpg','pty.spawn','_posixsubprocess.fork_exec','signal.pthread_kill'}
-_audit_runtime = {'sys.addaudithook','sys.excepthook','sys.unraisablehook','sys.monitoring.register_callback',
-    'cpython.PyConfig_Set','cpython.PyInterpreterState_Clear','cpython.PyInterpreterState_New','cpython._PySys_ClearAuditHooks',
-    'cpython.run_command','cpython.run_file','cpython.run_module','cpython.run_stdin','cpython.run_startup',
-    'cpython.remote_debugger_script','sys.remote_exec','socket.sethostname','os.add_dll_directory','os.putenv','os.unsetenv',
-    '_thread.start_new_thread','_thread.start_joinable_thread'}
-_audit_ctypes = {'ctypes.dlopen','ctypes.dlsym','ctypes.dlsym/handle','ctypes.call_function','ctypes.cdata','ctypes.cdata/buffer',
-    'ctypes.memoryview_at','ctypes.string_at','ctypes.wstring_at','ctypes.addressof','ctypes.PyObj_FromPtr'}
-_audit_win = {'_winapi.CreateFile','_winapi.CreateProcess','_winapi.OpenProcess','_winapi.TerminateProcess','_winapi.CreateJunction',
-    '_winapi.CreateNamedPipe','_winapi.CreatePipe','msvcrt.locking','msvcrt.get_osfhandle','msvcrt.open_osfhandle',
-    'winreg.CreateKey','winreg.DeleteKey','winreg.DeleteValue','winreg.SetValue','winreg.LoadKey','winreg.SaveKey',
-    'winreg.DisableReflectionKey','winreg.EnableReflectionKey'}
-_audit_deny = _audit_proc|_audit_runtime|_audit_ctypes|_audit_win
+# 'http.client.', 'socket.', 
+_audit_allow = {'array.__new__', 'builtins.breakpoint', 'builtins.id', 'builtins.input', 'builtins.input/result', 'code.__new__', 'compile',
+    'cpython.run_interactivehook', 'exec', 'fcntl.', 'ftplib.', 'function.__new__', 'gc.', 'glob.glob', 'glob.glob/2', 'imaplib.', 'import',
+    'marshal.', 'mmap.__new__', 'object.__delattr__', 'object.__getattr__', 'os.fork', 'os.forkpty', 'os.fwalk', 'os.getxattr', 'os.listdir',
+    'os.listdrives', 'os.listmounts', 'os.listvolumes', 'os.listxattr', 'os.lockf', 'os.scandir', 'os.utime', 'os.walk', 'pathlib.Path.glob',
+    'pathlib.Path.rglob', 'pdb.Pdb', 'pickle.find_class', 'poplib.', 'resource.prlimit', 'resource.setrlimit', 'setopencodehook', 'smtplib.',
+    'sqlite3.connect/handle', 'sqlite3.enable_load_extension', 'sys._current_exceptions', 'sys._current_frames', 'sys._getframe',
+    'sys._getframemodulename', 'sys.set_asyncgen_hooks_finalizer', 'sys.set_asyncgen_hooks_firstiter', 'sys.setprofile', 'sys.settrace',
+    'syslog.closelog', 'syslog.openlog', 'syslog.setlogmask', 'syslog.syslog', 'time.sleep', 'urllib.Request', 'webbrowser.open',
+    'winreg.ConnectRegistry', 'winreg.EnumKey', 'winreg.EnumValue', 'winreg.ExpandEnvironmentStrings', 'winreg.OpenKey',
+    'winreg.OpenKey/result', 'winreg.PyHKEY.Detach', 'winreg.QueryInfoKey', 'winreg.QueryReflectionKey', 'winreg.QueryValue'}
+
 _AuditCfg = namedtuple('AuditCfg', 'oks before_deny on_call data monitor_calls')
 _state_attr = '_fastaudit_state'
 
@@ -32,8 +30,9 @@ def _new_state():
     ctx = ContextVar('fastaudit_cfg', default=None)
     write_flags = os.O_WRONLY|os.O_RDWR|os.O_CREAT|os.O_TRUNC|os.O_APPEND
     audit_1st,audit_dst,audit_both = map(frozenset, (_audit_1st,_audit_dst,_audit_both))
-    audit_deny = frozenset(_audit_deny|{'fastaudit.call','audit_perms.set_config','audit_perms.set_data'})
-    audit_all = audit_deny|audit_1st|audit_dst|audit_both|{'open','os.chdir','os.truncate','object.__setattr__'}
+    audit_allow = frozenset(o for o in _audit_allow if not o.endswith('.'))
+    audit_allow_prefix = tuple(o for o in _audit_allow if o.endswith('.'))
+    audit_check = audit_1st|audit_dst|audit_both|{'open','os.chdir','os.truncate','object.__setattr__'}
     realpath,dirname,fsdecode,sep,getframe = os.path.realpath,os.path.dirname,os.fsdecode,os.sep,sys._getframe
     mon,audit,stdlib = getattr(sys, 'monitoring', None),sys.audit,frozenset(sys.stdlib_module_names)
     safe_native = tuple(sorted({ep.value.strip() for ep in entry_points(group='fastaudit_safe_native') if ep.value.strip()}))
@@ -89,9 +88,9 @@ def _new_state():
         return any(rp==(cur if o=='.' else o) or rp.startswith((cur if o=='.' else o)+sep) for o in cfg.oks)
 
     def chk(cfg, event, args):
-        if event not in audit_all: return
+        if event in audit_allow or event.startswith(audit_allow_prefix): return
         errstr = f"Audit: {event} blocked in sandbox with args: {args}"
-        if event in audit_deny: return deny(cfg, event, args, errstr)
+        if event not in audit_check: return deny(cfg, event, args, errstr)
         if event=='object.__setattr__':
             if args[1] in ('__defaults__', '__doc__','__module__'): return
             return deny(cfg, event, args, errstr)
