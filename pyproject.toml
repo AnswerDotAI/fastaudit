@@ -16,15 +16,17 @@ classifiers = [ "Programming Language :: Python :: 3", "Programming Language :: 
 dependencies = [ "fastcore", ]
 
 [project.optional-dependencies]
-dev = [ "pytest", "orjson", "numpy", "nbformat", "fastship", "build", "twine", ]
+dev = [ "pytest", "orjson", "numpy", "nbformat", "regex", "exhash", "fastship", "build", "twine", ]
 
 [project.urls]
 Homepage = "https://github.com/AnswerDotAI/fastaudit"
 
 [project.entry-points.fastaudit_safe_native]
+_regex = "_regex"
 numpy = "numpy"
 orjson = "orjson"
 rpds = "rpds"
+regex_regex = "regex._regex"
 
 [tool.setuptools.dynamic]
 version = { attr = "fastaudit.__version__" }

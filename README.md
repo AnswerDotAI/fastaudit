@@ -115,6 +115,8 @@ It receives the caller, callee, function object, code object, bytecode offset, a
 
 The optional `data` argument is stored in the audit context config and passed to both callbacks. A host can build mutable policy state outside the sandbox, pass a frozen snapshot to `mk_audit`, and later update that snapshot with `audit_perms.set_data(...)`. Creating or entering a new audit context, or calling `set_data`, raises an internal audit event and is denied while `audit_perms()` is active.
 
+`audit_state()` returns a small debug snapshot of the closed-over audit state, including `safe_native`, `monitoring`, `tool_id`, `active`, and `monitor_calls`.
+
 `mk_audit()` uses `sys.monitoring` tool id `3` by default when call monitoring is enabled. Pass `tool_id=...` if the host already uses that id.
 
 ## API sketch
@@ -126,6 +128,8 @@ with audit_perms():
     exec(code, restricted_globals)
 
 audit_perms.set_data(frozenset(new_allowed))
+
+audit_state()
 
 audit_perms = mk_audit(['/tmp'], monitor_calls=False)  # audit hooks only
 ```

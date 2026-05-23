@@ -1,7 +1,8 @@
-import nbformat, numpy as np, orjson, os, pytest, shutil, subprocess, sys, traceback
+import nbformat, numpy as np, orjson, os, pytest, regex, shutil, subprocess, sys, traceback
+from exhash import exhash_file
 from fastcore.foundation import working_directory
 from fastcore.test import expect_fail
-from fastaudit.core import mk_audit
+from fastaudit.core import audit_state,mk_audit
 from os.path import join,realpath,expanduser
 
 
@@ -9,7 +10,7 @@ from os.path import join,realpath,expanduser
 def _safe_native_entrypoints(tmp_path_factory):
     p = tmp_path_factory.mktemp('safe_native')/'safe-0.dist-info'
     p.mkdir()
-    (p/'entry_points.txt').write_text('[fastaudit_safe_native]\norjson = orjson\nrpds = rpds\n')
+    (p/'entry_points.txt').write_text('[fastaudit_safe_native]\n_regex = _regex\nnumpy = numpy\norjson = orjson\nrpds = rpds\nregex_regex = regex._regex\n')
     sys.path.insert(0, str(p.parent))
     yield
     sys.path.remove(str(p.parent))
@@ -73,9 +74,12 @@ def test_audit_blocks(tmp_path):
             def __call__(self): return 'ok'
         assert PyCallable()() == 'ok'
 
-        # Safe native entry points are allowed; other non-stdlib native calls are blocked.
+        # Safe native entry points are allowed; unlisted native calls are blocked.
+        assert 'numpy' in audit_state()['safe_native']
         assert orjson.dumps({'a': 1}) == b'{"a":1}'
-        with expect_fail(PermissionError): np.array([1, 2, 3]).sum()
+        assert np.array([1, 2, 3]).sum() == 6
+        assert regex.compile('a').match('a')
+        with expect_fail(PermissionError): exhash_file('exhash.txt', ['0|0000|a\nx'], inplace=True)
 
         # Audit policy cannot be replaced from inside the sandbox.
         with expect_fail(PermissionError): mk_audit([expanduser('~')], monitor_calls=False)
@@ -85,11 +89,13 @@ def test_audit_blocks(tmp_path):
 def test_callbacks(tmp_path):
     def before_deny(event, args, frame, msg, data): return event=='subprocess.Popen' and args[1][:1]==['echo']
     def on_call(caller, callee, fn, code, off, data):
-        if callee.startswith('numpy.'): return sys.monitoring.DISABLE
+        if callee.startswith('exhash.'): return sys.monitoring.DISABLE
 
     with mk_audit([tmp_path], before_deny=before_deny, on_call=on_call)():
         # Host callbacks can allow native calls beyond the entry-point allowlist.
-        assert np.array([1, 2, 3]).sum() == 6
+        f = tmp_path/'exhash.txt'
+        exhash_file(str(f), ['0|0000|a\nx'], inplace=True)
+        assert f.read_text() == 'x\n'
         # …and audit events
         res = subprocess.run(['echo', 'hi'], capture_output=True, text=True)
         assert res.stdout == 'hi\n'

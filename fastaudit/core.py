@@ -153,6 +153,11 @@ def _new_state():
         mon.set_events(tool_id, mon.events.CALL)
         state['tool_id'] = tool_id
 
+    def audit_state_():
+        cfg = ctx.get()
+        return dict(safe_native=safe_native, monitoring=mon is not None, tool_id=state['tool_id'], active=cfg is not None,
+            monitor_calls=None if cfg is None else cfg.monitor_calls)
+
     def mk_audit_(oks, before_deny=None, on_call=None, data=None, tool_id=3, monitor_calls=True):
         audit('audit_perms.set_config', oks)
         if on_call and not monitor_calls: raise RuntimeError('on_call requires monitor_calls=True')
@@ -179,6 +184,7 @@ def _new_state():
         cm.set_data = set_data
         return cm
 
+    mk_audit_.audit_state = audit_state_
     sys.addaudithook(hook)
     return mk_audit_
 
@@ -192,3 +198,5 @@ def _get_mk_audit():
 
 def mk_audit(oks, before_deny=None, on_call=None, data=None, tool_id=3, monitor_calls=True):
     return _get_mk_audit()(oks, before_deny, on_call, data, tool_id, monitor_calls)
+
+def audit_state(): return _get_mk_audit().audit_state()
