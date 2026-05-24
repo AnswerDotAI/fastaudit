@@ -16,7 +16,7 @@ _audit_allow = {'array.__new__', 'builtins.breakpoint', 'builtins.id', 'builtins
     'marshal.', 'mmap.__new__', 'object.__delattr__', 'object.__getattr__', 'os.fork', 'os.forkpty', 'os.fwalk', 'os.getxattr', 'os.listdir',
     'os.listdrives', 'os.listmounts', 'os.listvolumes', 'os.listxattr', 'os.lockf', 'os.scandir', 'os.utime', 'os.walk', 'pathlib.Path.glob',
     'pathlib.Path.rglob', 'pdb.Pdb', 'pickle.find_class', 'poplib.', 'resource.prlimit', 'resource.setrlimit', 'setopencodehook', 'smtplib.',
-    'sqlite3.connect/handle', 'sqlite3.enable_load_extension', 'sys._current_exceptions', 'sys._current_frames', 'sys._getframe',
+    'sqlite3.connect/handle', 'sqlite3.enable_load_extension', 'sys._current_exceptions', 'sys._current_frames', 'sys._getframe', 'socket.',
     'sys._getframemodulename', 'sys.set_asyncgen_hooks_finalizer', 'sys.set_asyncgen_hooks_firstiter', 'sys.setprofile', 'sys.settrace',
     'syslog.closelog', 'syslog.openlog', 'syslog.setlogmask', 'syslog.syslog', 'time.sleep', 'urllib.Request', 'webbrowser.open',
     'winreg.ConnectRegistry', 'winreg.EnumKey', 'winreg.EnumValue', 'winreg.ExpandEnvironmentStrings', 'winreg.OpenKey',
