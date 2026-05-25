@@ -1,8 +1,8 @@
-import nbformat, numpy as np, orjson, os, pytest, regex, shutil, subprocess, sys, traceback
+import asyncio, nbformat, numpy as np, orjson, os, pytest, regex, shutil, subprocess, sys, traceback
 from exhash import exhash_file
 from fastcore.foundation import working_directory
 from fastcore.test import expect_fail
-from fastaudit.core import audit_state,mk_audit
+from fastaudit.core import active_calls,audit_state,mk_audit,track_call
 from os.path import join,realpath,expanduser
 
 
@@ -87,8 +87,8 @@ def test_audit_blocks(tmp_path):
 
 
 def test_callbacks(tmp_path):
-    def before_deny(event, args, frame, msg, data): return event=='subprocess.Popen' and args[1][:1]==['echo'] or event=='fastaudit.ddl' and args==('ok',)
-    def on_call(caller, callee, fn, code, off, data):
+    def before_deny(event, args, frame, msg, data, calls): return event=='subprocess.Popen' and args[1][:1]==['echo'] or event=='fastaudit.ddl' and args==('ok',)
+    def on_call(caller, callee, fn, code, off, data, calls):
         if callee.startswith('exhash.'): return sys.monitoring.DISABLE
 
     with mk_audit([tmp_path], before_deny=before_deny, on_call=on_call)():
@@ -97,7 +97,7 @@ def test_callbacks(tmp_path):
         exhash_file(str(f), ['0|0000|a\nx'], inplace=True)
         assert f.read_text() == 'x\n'
         # Host callbacks can also allow unknown or package-provided audit events.
-        sys.audit('http.client.connect', None, 'example.com', 80)
+        sys.audit('gc.get_objects', 0)
         sys.audit('fastaudit.ddl', 'ok')
         with expect_fail(PermissionError): sys.audit('fastaudit.dml', 'delete')
 
@@ -106,6 +106,43 @@ def test_callbacks(tmp_path):
         assert res.stdout == 'hi\n'
         # Neighboring subprocess commands remain blocked.
         with expect_fail(PermissionError): subprocess.run(['ls'])
+
+
+def test_call_tracker(tmp_path):
+    def sync_tool(): return 'ok'
+    assert track_call(sync_tool) is sync_tool
+
+    async def run():
+        wait = asyncio.Event()
+        async def inherited_context():
+            await wait.wait()
+            return active_calls()
+
+        @track_call
+        async def trusted_echo(msg, loud=False):
+            task = asyncio.create_task(inherited_context())
+            res = subprocess.run(['echo', msg.upper() if loud else msg], capture_output=True, text=True)
+            return res,task
+
+        def before_deny(event, args, frame, msg, data, calls):
+            return event=='subprocess.Popen' and any(c.qualname.endswith('trusted_echo') and c.args==('hi',) and c.kwargs=={'loud':True}
+                for c in calls)
+
+        with mk_audit([tmp_path], before_deny=before_deny)():
+            # Asyncio can lazily create its default executor thread inside DNS/file helpers.
+            assert await asyncio.get_running_loop().run_in_executor(None, lambda: 'ok') == 'ok'
+
+            # Active calls can drive policy across async frames without stack walking.
+            res,task = await trusted_echo('hi', loud=True)
+            assert res.stdout == 'HI\n'
+            with expect_fail(PermissionError): subprocess.run(['echo', 'hi'])
+
+            # Finished calls copied into child tasks are ignored.
+            assert active_calls() == ()
+            wait.set()
+            assert await task == ()
+
+    asyncio.run(run())
 
 
 def test_nbformat_read(tmp_path):
@@ -132,7 +169,7 @@ def test_implement_allow_list(tmp_path):
     def allow(fn): allowed.add(f'{fn.__module__}.{fn.__qualname__}')
     allow(trusted_echo)
 
-    def before_deny(event, args, frame, msg, data):
+    def before_deny(event, args, frame, msg, data, calls):
         while frame:
             if f"{frame.f_globals.get('__name__')}.{frame.f_code.co_qualname}" in data: return True
             frame = frame.f_back

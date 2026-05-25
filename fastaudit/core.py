@@ -1,8 +1,9 @@
-import os, sys
+import inspect, os, sys
 from fastcore.utils import *
 from collections import namedtuple
 from contextlib import contextmanager
 from contextvars import ContextVar
+from functools import wraps
 from importlib.metadata import entry_points
 
 _audit_1st = {'os.chmod', 'os.chown', 'os.chflags', 'os.mkdir', 'os.remove', 'os.removexattr', 'os.rmdir', 'os.setxattr',
@@ -16,14 +17,54 @@ _audit_allow = {'array.__new__', 'builtins.breakpoint', 'builtins.id', 'builtins
     'marshal.', 'mmap.__new__', 'object.__delattr__', 'object.__getattr__', 'os.fork', 'os.forkpty', 'os.fwalk', 'os.getxattr', 'os.listdir',
     'os.listdrives', 'os.listmounts', 'os.listvolumes', 'os.listxattr', 'os.lockf', 'os.scandir', 'os.utime', 'os.walk', 'pathlib.Path.glob',
     'pathlib.Path.rglob', 'pdb.Pdb', 'pickle.find_class', 'poplib.', 'resource.prlimit', 'resource.setrlimit', 'setopencodehook', 'smtplib.',
-    'sqlite3.connect/handle', 'sqlite3.enable_load_extension', 'sys._current_exceptions', 'sys._current_frames', 'sys._getframe', 'socket.',
+    'sqlite3.connect/handle', 'sqlite3.enable_load_extension', 'sys._current_exceptions', 'sys._current_frames', 'sys._getframe',
     'sys._getframemodulename', 'sys.set_asyncgen_hooks_finalizer', 'sys.set_asyncgen_hooks_firstiter', 'sys.setprofile', 'sys.settrace',
     'syslog.closelog', 'syslog.openlog', 'syslog.setlogmask', 'syslog.syslog', 'time.sleep', 'urllib.Request', 'webbrowser.open',
     'winreg.ConnectRegistry', 'winreg.EnumKey', 'winreg.EnumValue', 'winreg.ExpandEnvironmentStrings', 'winreg.OpenKey',
     'winreg.OpenKey/result', 'winreg.PyHKEY.Detach', 'winreg.QueryInfoKey', 'winreg.QueryReflectionKey', 'winreg.QueryValue'}
 
 _AuditCfg = namedtuple('AuditCfg', 'oks before_deny on_call data monitor_calls')
+TrackedCall = namedtuple('TrackedCall', 'fn args kwargs module qualname name')
 _state_attr = '_fastaudit_state'
+
+
+class _ActiveCall:
+    def __init__(self, call): self.call,self.active = call,True
+
+class CallTracker:
+    def __init__(self, name='fastaudit_active_calls'): self.ctx = ContextVar(name, default=())
+
+    def _call(self, fn, args=(), kwargs=None):
+        if args is None: args = ()
+        if kwargs is None: kwargs = {}
+        module = getattr(fn, '__module__', None)
+        qualname = getattr(fn, '__qualname__', getattr(fn, '__name__', None))
+        name = f'{module}.{qualname}' if module and qualname else qualname
+        return TrackedCall(fn, tuple(args), dict(kwargs), module, qualname, name)
+
+    @contextmanager
+    def track(self, fn, args=(), kwargs=None):
+        o = _ActiveCall(self._call(fn, args, kwargs))
+        tok = self.ctx.set(self.ctx.get()+(o,))
+        try: yield o.call
+        finally:
+            o.active = False
+            self.ctx.reset(tok)
+
+    def active(self): return tuple(o.call for o in self.ctx.get() if o.active)
+
+    def wrap(self, fn):
+        if getattr(fn, '_fastaudit_orig', None) is not None or not inspect.iscoroutinefunction(fn): return fn
+        @wraps(fn)
+        async def _fn(*args, **kwargs):
+            with self.track(fn, args, kwargs): return await fn(*args, **kwargs)
+        _fn._fastaudit_orig = fn
+        return _fn
+
+
+_default_call_tracker = CallTracker()
+track_call = _default_call_tracker.wrap
+active_calls = _default_call_tracker.active
 
 
 def _new_state():
@@ -36,6 +77,7 @@ def _new_state():
     realpath,dirname,fsdecode,sep,getframe = os.path.realpath,os.path.dirname,os.fsdecode,os.sep,sys._getframe
     mon,audit,stdlib = getattr(sys, 'monitoring', None),sys.audit,frozenset(sys.stdlib_module_names)
     safe_native = tuple(sorted({ep.value.strip() for ep in entry_points(group='fastaudit_safe_native') if ep.value.strip()}))
+    get_active_calls = active_calls
     state = {'tool_id':None}
 
     def frame_name(f): return f"{f.f_globals.get('__name__')}.{f.f_code.co_qualname}"
@@ -74,8 +116,18 @@ def _new_state():
             if not frame_name(f).startswith('fastaudit.'): return f
             f = f.f_back
 
+    def in_frame(mod, qual):
+        f = getframe()
+        while f:
+            if f.f_globals.get('__name__')==mod and f.f_code.co_qualname==qual: return True
+            f = f.f_back
+
+    def asyncio_executor_thread(args):
+        t = getattr(args[0], '__self__', None)
+        return getattr(t, 'name', '').startswith('asyncio_') and in_frame('asyncio.base_events', 'BaseEventLoop.run_in_executor')
+
     def deny(cfg, event, args, msg):
-        if cfg.before_deny and cfg.before_deny(event, args, external_frame(), msg, cfg.data): return
+        if cfg.before_deny and cfg.before_deny(event, args, external_frame(), msg, cfg.data, get_active_calls()): return
         raise PermissionError(msg)
 
     def ok_path(cfg, p, parent=False):
@@ -89,6 +141,7 @@ def _new_state():
 
     def chk(cfg, event, args):
         if event in audit_allow or event.startswith(audit_allow_prefix): return
+        if event=='_thread.start_new_thread' and asyncio_executor_thread(args): return
         errstr = f"Audit: {event} blocked in sandbox with args: {args}"
         if event not in audit_check: return deny(cfg, event, args, errstr)
         if event=='object.__setattr__':
@@ -129,7 +182,7 @@ def _new_state():
         caller,callee = frame_name(getframe(1)),func_name(fn, mod)
         if not callee: return
         if cfg.on_call:
-            res = cfg.on_call(caller, callee, fn, code, off, cfg.data)
+            res = cfg.on_call(caller, callee, fn, code, off, cfg.data, get_active_calls())
             if res is mon.DISABLE: return mon.DISABLE
             if res is False: return
         try: audit('fastaudit.call', caller, callee)

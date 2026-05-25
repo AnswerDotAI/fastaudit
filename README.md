@@ -75,6 +75,8 @@ Reads are generally allowed.
 
 Subprocess creation and similar process escapes are denied by default.
 
+Thread creation is denied by default, with one narrow compatibility exception: asyncio may lazily create its default executor thread from `BaseEventLoop.run_in_executor`, for example while resolving DNS. `fastaudit` allows that `asyncio_` worker thread start, but does not allow general user-created threads.
+
 The allowed root `'.'` is dynamic: it means the current directory at the time of each checked operation. This lets a sandbox follow allowed `chdir` calls into child directories. `os.chdir` itself is checked against the destination directory, not the destination's parent.
 
 Non-stdlib native calls raise a `fastaudit.call` audit event while `audit_perms()` is active when `monitor_calls=True`. Python calls, stdlib calls, and safe native entry point prefixes are ignored by the call monitor. The context manager calls `sys.monitoring.restart_events()` on entry so monitored call sites disabled before the context are seen again inside it. With `monitor_calls=False`, only normal Python audit-hook events are checked.
@@ -101,10 +103,10 @@ Some user-provided tools need permissions that ordinary generated code should no
 `fastaudit` does not define that policy itself. Host code can pass `before_deny`, which is called after `fastaudit` decides an operation should be blocked and before `PermissionError` is raised:
 
 ```python
-before_deny(event, args, frame, msg, data)
+before_deny(event, args, frame, msg, data, calls)
 ```
 
-The callback receives the event name, audit arguments, the first non-`fastaudit` stack frame, the error message, and the current host data. Returning a truthy value allows the operation. Returning a falsey value denies it. Exceptions from the callback propagate.
+The callback receives the event name, audit arguments, the first non-`fastaudit` stack frame, the error message, the current host data, and currently active tracked calls. Returning a truthy value allows the operation. Returning a falsey value denies it. Exceptions from the callback propagate.
 
 Audit events that are not in `fastaudit`'s explicit allow or path-check lists also go through `before_deny`. This lets libraries expose their own audit events without needing to depend on `fastaudit`; the host decides which of those events to allow.
 
@@ -113,12 +115,24 @@ Internally, allowed audit event entries ending in `.` are treated as prefixes, s
 For other non-stdlib native calls, host code can also pass `on_call`, which runs before `fastaudit.call` is raised. `on_call` requires `monitor_calls=True`:
 
 ```python
-on_call(caller, callee, fn, code, off, data)
+on_call(caller, callee, fn, code, off, data, calls)
 ```
 
-It receives the caller, callee, function object, code object, bytecode offset, and current host data. It can return `False` to suppress the audit event for that call, or `sys.monitoring.DISABLE` to disable that monitored call site. Exceptions from the callback propagate.
+It receives the caller, callee, function object, code object, bytecode offset, current host data, and currently active tracked calls. It can return `False` to suppress the audit event for that call, or `sys.monitoring.DISABLE` to disable that monitored call site. Exceptions from the callback propagate.
 
 The optional `data` argument is stored in the audit context config and passed to both callbacks. A host can build mutable policy state outside the sandbox, pass a frozen snapshot to `mk_audit`, and later update that snapshot with `audit_perms.set_data(...)`. Creating or entering a new audit context, or calling `set_data`, raises an internal audit event and is denied while `audit_perms()` is active.
+
+For async tools, the stack may no longer show which trusted function started the work. `track_call` records active wrapped coroutine calls in a `ContextVar`, including the function, args, kwargs, module, qualname, and full name. Non-coroutine functions are returned unchanged:
+
+```python
+@track_call
+async def trusted_tool(q): ...
+
+def before_deny(event, args, frame, msg, data, calls):
+    return event=='subprocess.Popen' and any(c.name=='pkg.trusted_tool' for c in calls)
+```
+
+Finished calls are marked inactive, so copied async contexts in child tasks do not keep stale permissions alive after the wrapped call returns.
 
 `audit_state()` returns a small debug snapshot of the closed-over audit state, including `safe_native`, `monitoring`, `tool_id`, `active`, and `monitor_calls`.
 
