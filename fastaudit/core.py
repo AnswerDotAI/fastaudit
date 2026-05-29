@@ -1,4 +1,4 @@
-import inspect, os, sys
+import functools, inspect, os, sys
 from fastcore.utils import *
 from collections import namedtuple
 from contextlib import contextmanager
@@ -90,6 +90,7 @@ def _new_state():
             if nm in cls.__dict__: return getattr(cls, '__module__', None)
 
     def func_mod(fn):
+        fn = unwrap_call(fn)
         mod = getattr(fn, '__module__', None)
         cls = getattr(fn, '__objclass__', None)
         if not mod and cls is not None: mod = getattr(cls, '__module__', None)
@@ -98,6 +99,7 @@ def _new_state():
         return mod
 
     def func_name(fn, mod=None):
+        fn = unwrap_call(fn)
         if mod is None: mod = func_mod(fn)
         nm = getattr(fn, '__qualname__', getattr(fn, '__name__', None))
         return f'{mod}.{nm}' if mod and nm else None
@@ -106,7 +108,14 @@ def _new_state():
 
     def is_safe_native_mod(mod): return bool(mod) and any(mod==p or mod.startswith(p+'.') for p in safe_native)
 
+    def unwrap_call(fn):
+        while True:
+            if isinstance(fn, functools.partial): fn = fn.func
+            elif hasattr(fn, '__wrapped__'): fn = fn.__wrapped__
+            else: return fn
+
     def callee_is_python(fn):
+        fn = unwrap_call(fn)
         if hasattr(fn, '__code__') or isinstance(fn, type): return True
         return hasattr(getattr(type(fn), '__call__', None), '__code__')
 

@@ -26,6 +26,7 @@ _regex = "_regex"
 numpy = "numpy"
 orjson = "orjson"
 rpds = "rpds"
+pydantic = "pydantic_core"
 regex_regex = "regex._regex"
 
 [tool.setuptools.dynamic]

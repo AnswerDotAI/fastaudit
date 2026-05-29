@@ -1,8 +1,10 @@
 import asyncio, nbformat, numpy as np, orjson, os, pytest, regex, shutil, subprocess, sys, traceback
 from exhash import exhash_file
+from exhash.exhash import line_hash as native_line_hash
 from fastcore.foundation import working_directory
 from fastcore.test import expect_fail
 from fastaudit.core import active_calls,audit_state,mk_audit,track_call
+from functools import lru_cache,partial
 from os.path import join,realpath,expanduser
 
 
@@ -73,6 +75,10 @@ def test_audit_blocks(tmp_path):
             def __init__(self): super().__init__()
             def __call__(self): return 'ok'
         assert PyCallable()() == 'ok'
+        @lru_cache(maxsize=8)
+        def cached(): return 'ok'
+        assert cached() == 'ok'
+        assert partial(cached)() == 'ok'
 
         # Safe native entry points are allowed; unlisted native calls are blocked.
         assert 'numpy' in audit_state()['safe_native']
@@ -80,6 +86,7 @@ def test_audit_blocks(tmp_path):
         assert np.array([1, 2, 3]).sum() == 6
         assert regex.compile('a').match('a')
         with expect_fail(PermissionError): exhash_file('exhash.txt', ['0|0000|a\nx'], inplace=True)
+        with expect_fail(PermissionError): partial(native_line_hash, 'x')()
 
         # Audit policy cannot be replaced from inside the sandbox.
         with expect_fail(PermissionError): mk_audit([expanduser('~')], monitor_calls=False)
