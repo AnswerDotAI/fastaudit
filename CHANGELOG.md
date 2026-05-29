@@ -1,5 +1,17 @@
 <!-- do not remove -->
 
+## 0.2.0
+
+### Breaking Changes
+
+- Switch audit policy from explicit deny-list to explicit allow-list with prefix support and `before_deny` fallback ([#10](https://github.com/AnswerDotAI/fastaudit/issues/10))
+
+### New Features
+
+- Add `track_call` for async-aware permissions; pass active calls to `before_deny`/`on_call`; allow asyncio default executor thread ([#11](https://github.com/AnswerDotAI/fastaudit/issues/11))
+- Add `audit_state` ([#9](https://github.com/AnswerDotAI/fastaudit/issues/9))
+
+
 ## 0.1.2
 
 ### New Features
