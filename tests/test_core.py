@@ -93,6 +93,18 @@ def test_audit_blocks(tmp_path):
         with expect_fail(PermissionError), permissive(): pass
 
 
+
+def test_expanduser_allowed_path(tmp_path, monkeypatch):
+    home = tmp_path/'home'
+    allowed = home/'allowed'
+    allowed.mkdir(parents=True)
+    monkeypatch.setenv('HOME', str(home))
+    target = allowed/'audit-path-test.txt'
+
+    with mk_audit(('~/allowed',), monitor_calls=False)():
+        touch(target)
+
+    assert target.read_text() == 'x'
 def test_callbacks(tmp_path):
     def before_deny(event, args, frame, msg, data, calls): return event=='subprocess.Popen' and args[1][:1]==['echo'] or event=='fastaudit.ddl' and args==('ok',)
     def on_call(caller, callee, fn, code, off, data, calls):
