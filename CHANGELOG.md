@@ -1,5 +1,12 @@
 <!-- do not remove -->
 
+## 0.1.4
+
+### New Features
+
+- expand `~` in allowed paths ([#5](https://github.com/AnswerDotAI/fastaudit/pull/5)), thanks to [@kafkasl](https://github.com/kafkasl)
+
+
 ## 0.2.0
 
 ### Breaking Changes
