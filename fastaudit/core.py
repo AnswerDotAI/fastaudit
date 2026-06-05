@@ -12,7 +12,7 @@ _audit_dst = {'shutil.copyfile', 'shutil.copymode', 'shutil.copystat', 'shutil.c
 _audit_both = {'os.link', 'os.rename', 'os.symlink', 'shutil.move', 'shutil.unpack_archive'}
 
 _audit_allow = {'array.__new__', 'builtins.breakpoint', 'builtins.id', 'builtins.input', 'builtins.input/result', 'code.__new__', 'compile',
-    'http.client.', 'socket.', # TODO: remove
+    'http.client.', 'socket.',
     'cpython.run_interactivehook', 'exec', 'fcntl.', 'ftplib.', 'function.__new__', 'gc.', 'glob.glob', 'glob.glob/2', 'imaplib.', 'import',
     'marshal.', 'mmap.__new__', 'object.__delattr__', 'object.__getattr__', 'os.fork', 'os.forkpty', 'os.fwalk', 'os.getxattr', 'os.listdir',
     'os.listdrives', 'os.listmounts', 'os.listvolumes', 'os.listxattr', 'os.lockf', 'os.scandir', 'os.utime', 'os.walk', 'pathlib.Path.glob',
