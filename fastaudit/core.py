@@ -158,7 +158,7 @@ def _new_state():
         errstr = f"Audit: {event} blocked in sandbox with args: {args}"
         if event not in audit_check: return deny(cfg, event, args, errstr)
         if event=='object.__setattr__':
-            if args[1] in ('__class__', '__defaults__', '__doc__','__module__'): return
+            if args[1] in ('__bases__', '__class__', '__defaults__', '__doc__','__module__'): return
             return deny(cfg, event, args, errstr)
         ps = []
         if event=='open':
