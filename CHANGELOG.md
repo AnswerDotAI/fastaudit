@@ -7,6 +7,13 @@
 - Correctly catch cython as native code ([#13](https://github.com/AnswerDotAI/fastaudit/issues/13))
 
 
+## 0.2.2
+
+### New Features
+
+- Correctly catch cython as native code ([#13](https://github.com/AnswerDotAI/fastaudit/issues/13))
+
+
 ## 0.2.1
 
 ### New Features
