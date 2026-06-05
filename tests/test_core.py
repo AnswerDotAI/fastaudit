@@ -1,6 +1,7 @@
 import asyncio, nbformat, numpy as np, orjson, os, pytest, regex, shutil, subprocess, sys, traceback
 from exhash import exhash_file
 from exhash.exhash import line_hash as native_line_hash
+from fastcore.basics import Self
 from fastcore.foundation import working_directory
 from fastcore.test import expect_fail
 from fastaudit.core import active_calls,audit_state,mk_audit,track_call
@@ -75,6 +76,11 @@ def test_audit_blocks(tmp_path):
             def __init__(self): super().__init__()
             def __call__(self): return 'ok'
         assert PyCallable()() == 'ok'
+        # fastcore.Self mutates in __getattr__, which call monitoring must not trigger.
+        s = Self.split(',')
+        state = vars(s).copy()
+        assert s('a,b') == ['a', 'b']
+        assert vars(s) == state
         @lru_cache(maxsize=8)
         def cached(): return 'ok'
         assert cached() == 'ok'
@@ -101,8 +107,7 @@ def test_expanduser_allowed_path(tmp_path, monkeypatch):
     monkeypatch.setenv('HOME', str(home))
     target = allowed/'audit-path-test.txt'
 
-    with mk_audit(('~/allowed',), monitor_calls=False)():
-        touch(target)
+    with mk_audit(('~/allowed',), monitor_calls=False)(): touch(target)
 
     assert target.read_text() == 'x'
 def test_callbacks(tmp_path):

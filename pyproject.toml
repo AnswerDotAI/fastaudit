@@ -16,7 +16,7 @@ classifiers = [ "Programming Language :: Python :: 3", "Programming Language :: 
 dependencies = [ "fastcore", ]
 
 [project.optional-dependencies]
-dev = [ "pytest", "orjson", "numpy", "nbformat", "regex", "exhash", "fastship", "build", "twine", ]
+dev = [ "pytest", "orjson", "numpy", "nbformat", "regex", "exhash", "cython", "fastship", "build", "twine", ]
 
 [project.urls]
 Homepage = "https://github.com/AnswerDotAI/fastaudit"

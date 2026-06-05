@@ -1,4 +1,4 @@
-import functools, inspect, os, sys
+import functools, inspect, os, sys, types
 from fastcore.utils import *
 from collections import namedtuple
 from contextlib import contextmanager
@@ -111,12 +111,16 @@ def _new_state():
     def unwrap_call(fn):
         while True:
             if isinstance(fn, functools.partial): fn = fn.func
-            elif hasattr(fn, '__wrapped__'): fn = fn.__wrapped__
-            else: return fn
+            else:
+                # Some callable objects mutate themselves in __getattr__, so the monitor must not probe __wrapped__ dynamically.
+                try: d = object.__getattribute__(fn, '__dict__')
+                except (AttributeError,TypeError): return fn
+                if '__wrapped__' not in d: return fn
+                fn = d['__wrapped__']
 
     def callee_is_python(fn):
         fn = unwrap_call(fn)
-        if hasattr(fn, '__code__') or isinstance(fn, type): return True
+        if isinstance(fn, (types.FunctionType, types.MethodType, type)): return True
         return hasattr(getattr(type(fn), '__call__', None), '__code__')
 
     def external_frame():
