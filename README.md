@@ -4,7 +4,7 @@
 
 It is not intended to be a hardened adversarial sandbox. Its purpose is to stop accidental damage from overly broad file operations, unexpected subprocess calls, and tool use that reaches outside approved working directories.
 
-The core mechanism is Python's audit hook system. The first `mk_audit()` call installs one process-wide audit hook. On Python 3.12 and newer, `sys.monitoring` is also used to raise audit events for non-stdlib native calls, except for native modules declared safe through `fastaudit_safe_native` entry point metadata. `mk_audit()` creates an audit context, then enables permission checks only while that execution context is active.
+The core mechanism is Python's audit hook system. The first `mk_audit()` call installs one process-wide audit hook. On Python 3.12 and newer, `sys.monitoring` is also used to raise audit events for non-stdlib native calls, except for native modules declared safe through `fastaudit_safe_native` entry point metadata or handled by packaged monitor hooks. `mk_audit()` creates an audit context, then enables permission checks only while that execution context is active.
 
 `fastaudit` requires Python 3.10 or newer. Native call monitoring requires Python 3.12 or newer and is enabled by default. Pass `monitor_calls=False` to use audit-hook-only mode on Python 3.10/3.11 or to avoid monitoring overhead.
 
@@ -79,7 +79,7 @@ Thread creation is denied by default, with one narrow compatibility exception: a
 
 The allowed root `'.'` is dynamic: it means the current directory at the time of each checked operation. This lets a sandbox follow allowed `chdir` calls into child directories. `os.chdir` itself is checked against the destination directory, not the destination's parent.
 
-Non-stdlib native calls raise a `fastaudit.call` audit event while `audit_perms()` is active when `monitor_calls=True`. Python calls, stdlib calls, and safe native entry point prefixes are ignored by the call monitor. The context manager calls `sys.monitoring.restart_events()` on entry so monitored call sites disabled before the context are seen again inside it. With `monitor_calls=False`, only normal Python audit-hook events are checked.
+Non-stdlib native calls raise a `fastaudit.call` audit event while `audit_perms()` is active when `monitor_calls=True`. Python calls, stdlib calls, safe native entry point prefixes, and packaged monitor-hook suppressions are ignored by the call monitor. The context manager calls `sys.monitoring.restart_events()` on entry so monitored call sites disabled before the context are seen again inside it. With `monitor_calls=False`, only normal Python audit-hook events are checked.
 
 Native modules can declare safe call prefixes with the `fastaudit_safe_native` entry point group:
 
@@ -89,6 +89,27 @@ mymarkdown = "mymarkdown._rust"
 ```
 
 `fastaudit` reads the entry point values as module prefixes. It does not load the entry points or import the target modules. Missing or unloadable modules are harmless. A value of `mymarkdown._rust` allows native calls from `mymarkdown._rust` and `mymarkdown._rust.*`, but not `mymarkdown.io`.
+
+Packages can also expose reusable monitor and audit hooks:
+
+```toml
+[project.entry-points.fastaudit_monitor_hook]
+mypkg = "mypkg.fastaudit:monitor"
+
+[project.entry-points.fastaudit_audit_hook]
+mypkg = "mypkg.fastaudit:before_deny"
+```
+
+Monitor hooks use the same signature as `on_call`. Audit hooks use the same signature as `before_deny`. `fastaudit` ships a default `lxml` monitor hook. It does not import `lxml`; it checks callee names, disables ordinary `lxml.` native calls, and leaves the known file writers blocked as `fastaudit.call`: `lxml.etree._ElementTree.write`, `lxml.etree._ElementTree.write_c14n`, `lxml.etree.xmlfile`, `lxml.etree.xmlfile.__enter__`, and `lxml.etree._XSLTResultTree.write_output`.
+
+Some packages have import-time side effects that raise sensitive audit events. For example, a package may set function `__code__` or class `__qualname__` while it is being imported. A package or host can declare those imports trusted:
+
+```toml
+[project.entry-points.fastaudit_import_allow]
+mypkg = "mypkg"
+```
+
+The entries are module prefixes, so `mypkg` also covers `mypkg.submodule`. `fastaudit` does not import these modules when reading metadata. During an audit context, if the stack contains a frame for an allowed module whose `__spec__` is currently initializing, audit events from that import are allowed. Hosts can also pass `allow_imports=('mypkg',)` to `mk_audit()` or call `audit_perms.add_imports('mypkg')` outside the sandbox.
 
 ### get/set attr hooks
 
@@ -134,7 +155,7 @@ def before_deny(event, args, frame, msg, data, calls):
 
 Finished calls are marked inactive, so copied async contexts in child tasks do not keep stale permissions alive after the wrapped call returns.
 
-`audit_state()` returns a small debug snapshot of the closed-over audit state, including `safe_native`, `monitoring`, `tool_id`, `active`, and `monitor_calls`.
+`audit_state()` returns a small debug snapshot of the closed-over audit state, including `safe_native`, `import_allow`, `monitoring`, `tool_id`, `active`, and `monitor_calls`.
 
 `mk_audit()` uses `sys.monitoring` tool id `3` by default when call monitoring is enabled. Pass `tool_id=...` if the host already uses that id.
 
@@ -147,10 +168,11 @@ with audit_perms():
     exec(code, restricted_globals)
 
 audit_perms.set_data(frozenset(new_allowed))
+audit_perms.add_imports('trusted_pkg')
 
 audit_state()
 
-audit_perms = mk_audit(['/tmp'], monitor_calls=False)  # audit hooks only
+audit_perms = mk_audit(['/tmp'], allow_imports=('trusted_pkg',), monitor_calls=False)  # audit hooks only
 ```
 
 ## Implementation notes
@@ -161,6 +183,7 @@ At construction time, bind or freeze:
 
 - approved roots
 - safe native module prefixes from `fastaudit_safe_native` entry points
+- import-allowed module prefixes from `fastaudit_import_allow` entry points
 - allowed and checked audit event sets
 - write flags
 - path helpers such as `realpath`, `dirname`, and `fsdecode`

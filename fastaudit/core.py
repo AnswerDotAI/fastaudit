@@ -23,7 +23,7 @@ _audit_allow = {'array.__new__', 'builtins.breakpoint', 'builtins.id', 'builtins
     'winreg.ConnectRegistry', 'winreg.EnumKey', 'winreg.EnumValue', 'winreg.ExpandEnvironmentStrings', 'winreg.OpenKey',
     'winreg.OpenKey/result', 'winreg.PyHKEY.Detach', 'winreg.QueryInfoKey', 'winreg.QueryReflectionKey', 'winreg.QueryValue'}
 
-_AuditCfg = namedtuple('AuditCfg', 'oks before_deny on_call data monitor_calls')
+_AuditCfg = namedtuple('AuditCfg', 'oks before_deny on_call data monitor_calls import_allow')
 TrackedCall = namedtuple('TrackedCall', 'fn args kwargs module qualname name')
 _state_attr = '_fastaudit_state'
 
@@ -76,7 +76,14 @@ def _new_state():
     audit_check = audit_1st|audit_dst|audit_both|{'open','os.chdir','os.truncate','object.__setattr__'}
     realpath,dirname,fsdecode,sep,getframe = os.path.realpath,os.path.dirname,os.fsdecode,os.sep,sys._getframe
     mon,audit,stdlib = getattr(sys, 'monitoring', None),sys.audit,frozenset(sys.stdlib_module_names)
-    safe_native = tuple(sorted({ep.value.strip() for ep in entry_points(group='fastaudit_safe_native') if ep.value.strip()}))
+    def clean_mods(ms):
+        if isinstance(ms, str): ms = (ms,)
+        return tuple(m.strip() for m in ms if m and m.strip())
+    def add_mods(a, b): return tuple(sorted(set(a)|set(clean_mods(b))))
+    safe_native = tuple(sorted(set(clean_mods(ep.value for ep in entry_points(group='fastaudit_safe_native')))))
+    import_allow = tuple(sorted(set(clean_mods(ep.value for ep in entry_points(group='fastaudit_import_allow')))))
+    monitor_hooks = tuple(ep.load() for ep in entry_points(group='fastaudit_monitor_hook')) if mon else ()
+    audit_hooks = tuple(ep.load() for ep in entry_points(group='fastaudit_audit_hook'))
     get_active_calls = active_calls
     state = {'tool_id':None}
 
@@ -106,7 +113,9 @@ def _new_state():
 
     def is_stdlib_mod(mod): return bool(mod) and mod.split('.', 1)[0] in stdlib
 
-    def is_safe_native_mod(mod): return bool(mod) and any(mod==p or mod.startswith(p+'.') for p in safe_native)
+    def module_allowed(mod, allowed): return bool(mod) and any(mod==p or mod.startswith(p+'.') for p in allowed)
+
+    def is_safe_native_mod(mod): return module_allowed(mod, safe_native)
 
     def unwrap_call(fn):
         while True:
@@ -120,13 +129,27 @@ def _new_state():
 
     def callee_is_python(fn):
         fn = unwrap_call(fn)
-        if isinstance(fn, (types.FunctionType, types.MethodType, type)): return True
+        if isinstance(fn, (types.FunctionType, types.MethodType)): return True
+        # Extension types are native constructors even though isinstance(cls, type).
+        if isinstance(fn, type): return '__module__' in getattr(fn, '__dict__', {})
         return hasattr(getattr(type(fn), '__call__', None), '__code__')
 
     def external_frame():
         f = getframe()
         while f:
             if not frame_name(f).startswith('fastaudit.'): return f
+            f = f.f_back
+
+    def spec_initializing(spec):
+        try: return object.__getattribute__(spec, '__dict__').get('_initializing', False)
+        except (AttributeError,TypeError): return False
+
+    def importing_allowed_module(allowed):
+        if not allowed: return
+        f = getframe()
+        while f:
+            g = f.f_globals
+            if spec_initializing(g.get('__spec__')) and module_allowed(g.get('__name__'), allowed): return True
             f = f.f_back
 
     def call_chain(event=None, args=(), extra=None):
@@ -153,7 +176,11 @@ def _new_state():
         return getattr(t, 'name', '').startswith('asyncio_') and in_frame('asyncio.base_events', 'BaseEventLoop.run_in_executor')
 
     def deny(cfg, event, args, msg):
-        if cfg.before_deny and cfg.before_deny(event, args, external_frame(), msg, cfg.data, get_active_calls()): return
+        if audit_hooks or cfg.before_deny:
+            frame,calls = external_frame(),get_active_calls()
+            for h in audit_hooks:
+                if h(event, args, frame, msg, cfg.data, calls): return
+            if cfg.before_deny and cfg.before_deny(event, args, frame, msg, cfg.data, calls): return
         raise PermissionError(msg)
 
     def ok_path(cfg, p, parent=False):
@@ -168,6 +195,8 @@ def _new_state():
     def chk(cfg, event, args):
         if event in audit_allow or event.startswith(audit_allow_prefix): return
         if event=='_thread.start_new_thread' and asyncio_executor_thread(args): return
+        if event.startswith('audit_perms.'): return deny(cfg, event, args, err_msg(event, args))
+        if importing_allowed_module(cfg.import_allow): return
         if event not in audit_check: return deny(cfg, event, args, err_msg(event, args))
         if event=='object.__setattr__':
             if args[1] in ('__bases__', '__class__', '__defaults__', '__doc__','__module__'): return
@@ -206,10 +235,16 @@ def _new_state():
         if cfg is None or not cfg.monitor_calls: return
         caller,callee = frame_name(getframe(1)),func_name(fn, mod)
         if not callee: return
-        if cfg.on_call:
-            res = cfg.on_call(caller, callee, fn, code, off, cfg.data, get_active_calls())
-            if res is mon.DISABLE: return mon.DISABLE
-            if res is False: return
+        if monitor_hooks or cfg.on_call:
+            calls = get_active_calls()
+            for h in monitor_hooks:
+                res = h(caller, callee, fn, code, off, cfg.data, calls)
+                if res is mon.DISABLE: return mon.DISABLE
+                if res is False: return
+            if cfg.on_call:
+                res = cfg.on_call(caller, callee, fn, code, off, cfg.data, calls)
+                if res is mon.DISABLE: return mon.DISABLE
+                if res is False: return
         try: audit('fastaudit.call', caller, callee, call_chain(extra=callee))
         except PermissionError as e:
             e.__traceback__ = None
@@ -233,14 +268,14 @@ def _new_state():
     def audit_state_():
         cfg = ctx.get()
         return dict(safe_native=safe_native, monitoring=mon is not None, tool_id=state['tool_id'], active=cfg is not None,
-            monitor_calls=None if cfg is None else cfg.monitor_calls)
+            monitor_calls=None if cfg is None else cfg.monitor_calls, import_allow=import_allow if cfg is None else cfg.import_allow)
 
-    def mk_audit_(oks, before_deny=None, on_call=None, data=None, tool_id=3, monitor_calls=True):
+    def mk_audit_(oks, before_deny=None, on_call=None, data=None, tool_id=3, monitor_calls=True, allow_imports=()):
         audit('audit_perms.set_config', oks)
         if on_call and not monitor_calls: raise RuntimeError('on_call requires monitor_calls=True')
         if monitor_calls: install_call_monitor(tool_id)
         oks = tuple('.' if o=='.' else realpath(os.path.expanduser(fsdecode(o))) for o in oks)
-        cfg = _AuditCfg(oks, before_deny, on_call, data, monitor_calls)
+        cfg = _AuditCfg(oks, before_deny, on_call, data, monitor_calls, add_mods(import_allow, allow_imports))
 
         @contextmanager
         def cm():
@@ -258,7 +293,14 @@ def _new_state():
             cfg = cfg._replace(data=d)
             return cfg.data
 
+        def add_imports(*mods):
+            nonlocal cfg
+            audit('audit_perms.add_imports', mods)
+            cfg = cfg._replace(import_allow=add_mods(cfg.import_allow, mods))
+            return cfg.import_allow
+
         cm.set_data = set_data
+        cm.add_imports = add_imports
         return cm
 
     mk_audit_.audit_state = audit_state_
@@ -273,7 +315,7 @@ def _get_mk_audit():
         setattr(sys, _state_attr, mk_audit_)
     return mk_audit_
 
-def mk_audit(oks, before_deny=None, on_call=None, data=None, tool_id=3, monitor_calls=True):
-    return _get_mk_audit()(oks, before_deny, on_call, data, tool_id, monitor_calls)
+def mk_audit(oks, before_deny=None, on_call=None, data=None, tool_id=3, monitor_calls=True, allow_imports=()):
+    return _get_mk_audit()(oks, before_deny, on_call, data, tool_id, monitor_calls, allow_imports)
 
 def audit_state(): return _get_mk_audit().audit_state()

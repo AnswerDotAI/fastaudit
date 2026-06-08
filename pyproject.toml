@@ -16,7 +16,7 @@ classifiers = [ "Programming Language :: Python :: 3", "Programming Language :: 
 dependencies = [ "fastcore", ]
 
 [project.optional-dependencies]
-dev = [ "pytest", "orjson", "numpy", "nbformat", "regex", "exhash", "cython", "fastship", "build", "twine", ]
+dev = [ "pytest", "orjson", "numpy", "nbformat", "regex", "exhash", "cython", "lxml", "fastship", "build", "twine", ]
 
 [project.urls]
 Homepage = "https://github.com/AnswerDotAI/fastaudit"
@@ -28,6 +28,9 @@ orjson = "orjson"
 rpds = "rpds"
 pydantic = "pydantic_core"
 regex_regex = "regex._regex"
+
+[project.entry-points.fastaudit_monitor_hook]
+lxml = "fastaudit.hooks:lxml_monitor"
 
 [tool.setuptools.dynamic]
 version = { attr = "fastaudit.__version__" }

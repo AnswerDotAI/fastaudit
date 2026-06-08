@@ -1,4 +1,4 @@
-import asyncio, nbformat, numpy as np, orjson, os, pytest, regex, shutil, subprocess, sys, traceback
+import asyncio, importlib, nbformat, numpy as np, orjson, os, pytest, regex, shutil, subprocess, sys, traceback
 from exhash import exhash_file
 from exhash.exhash import line_hash as native_line_hash
 from fastcore.basics import Self
@@ -6,6 +6,7 @@ from fastcore.foundation import working_directory
 from fastcore.test import expect_fail
 from fastaudit.core import active_calls,audit_state,mk_audit,track_call
 from functools import lru_cache,partial
+from lxml import etree
 from os.path import join,realpath,expanduser
 
 
@@ -13,13 +14,27 @@ from os.path import join,realpath,expanduser
 def _safe_native_entrypoints(tmp_path_factory):
     p = tmp_path_factory.mktemp('safe_native')/'safe-0.dist-info'
     p.mkdir()
-    (p/'entry_points.txt').write_text('[fastaudit_safe_native]\n_regex = _regex\nnumpy = numpy\norjson = orjson\nrpds = rpds\nregex_regex = regex._regex\n')
+    (p/'entry_points.txt').write_text("""[fastaudit_safe_native]
+_regex = _regex
+numpy = numpy
+orjson = orjson
+rpds = rpds
+regex_regex = regex._regex
+[fastaudit_monitor_hook]
+lxml = fastaudit.hooks:lxml_monitor
+[fastaudit_audit_hook]
+test_core = test_core:allow_test_audit_event
+[fastaudit_import_allow]
+entry_import_ok = entry_import_ok
+""")
     sys.path.insert(0, str(p.parent))
     yield
     sys.path.remove(str(p.parent))
 
 def touch(p, s='x'):
     with open(p, 'w') as f: f.write(s)
+
+def allow_test_audit_event(event, args, frame, msg, data, calls): return event=='fastaudit.test_hook' and args==('ok',)
 
 def test_audit_blocks(tmp_path):
     start = os.getcwd()
@@ -72,9 +87,11 @@ def test_audit_blocks(tmp_path):
         assert not [f for f in frames if f.filename.endswith('fastaudit/core.py')]
 
         # Python classes and callable instances are not treated as native calls.
+        class Plain: pass
         class PyCallable:
             def __init__(self): super().__init__()
             def __call__(self): return 'ok'
+        assert isinstance(Plain(), Plain)
         assert PyCallable()() == 'ok'
         # fastcore.Self mutates in __getattr__, which call monitoring must not trigger.
         s = Self.split(',')
@@ -91,6 +108,15 @@ def test_audit_blocks(tmp_path):
         assert orjson.dumps({'a': 1}) == b'{"a":1}'
         assert np.array([1, 2, 3]).sum() == 6
         assert regex.compile('a').match('a')
+        # Packaged monitor hooks can allow safe native calls while preserving known writer blocks.
+        xml = etree.fromstring(b'<root><x>1</x></root>')
+        tree = etree.ElementTree(xml)
+        style = etree.XML(b'<xsl:stylesheet version="1.0" xmlns:xsl="http://www.w3.org/1999/XSL/Transform"><xsl:template match="/"><out/></xsl:template></xsl:stylesheet>')
+        assert xml.find('x').text == '1'
+        with expect_fail(PermissionError, 'lxml.etree._ElementTree.write'): tree.write('lxml-write.xml')
+        with expect_fail(PermissionError, 'lxml.etree._ElementTree.write_c14n'): tree.write_c14n('lxml-c14n.xml')
+        with expect_fail(PermissionError, 'lxml.etree.xmlfile'): etree.xmlfile('lxml-file.xml')
+        with expect_fail(PermissionError, 'lxml.etree._XSLTResultTree.write_output'): etree.XSLT(style)(xml).write_output('lxml-xslt.xml')
         with expect_fail(PermissionError, 'test_core.test_audit_blocks -> exhash.exhash_file -> exhash._apply_file_command -> exhash.exhash -> exhash.exhash.exhash'): exhash_file('exhash.txt', ['0|0000|a\nx'], inplace=True)
         with expect_fail(PermissionError): partial(native_line_hash, 'x')()
 
@@ -122,6 +148,7 @@ def test_callbacks(tmp_path):
         assert f.read_text() == 'x\n'
         # Host callbacks can also allow unknown or package-provided audit events.
         sys.audit('gc.get_objects', 0)
+        sys.audit('fastaudit.test_hook', 'ok')
         sys.audit('fastaudit.ddl', 'ok')
         with expect_fail(PermissionError): sys.audit('fastaudit.dml', 'delete')
 
@@ -130,6 +157,31 @@ def test_callbacks(tmp_path):
         assert res.stdout == 'hi\n'
         # Neighboring subprocess commands remain blocked.
         with expect_fail(PermissionError): subprocess.run(['ls'])
+
+
+def test_allowed_import_side_effects(tmp_path):
+    def write_mod(nm): (tmp_path/f'{nm}.py').write_text('def f(): pass\nf.__code__ = f.__code__\n')
+    def import_mod(nm):
+        sys.modules.pop(nm, None)
+        importlib.invalidate_caches()
+        return importlib.import_module(nm)
+    for nm in ('entry_import_ok','runtime_import_ok','blocked_import'): write_mod(nm)
+
+    sys.path.insert(0, str(tmp_path))
+    try:
+        with mk_audit([tmp_path])():
+            # Import-allow entry points cover trusted import-time side effects.
+            assert import_mod('entry_import_ok').f() is None
+            with expect_fail(PermissionError): import_mod('blocked_import')
+
+        audit_perms = mk_audit([tmp_path], allow_imports=('runtime_import_ok',), monitor_calls=False)
+        with audit_perms():
+            # Runtime import allowances can be extended outside the sandbox.
+            assert import_mod('runtime_import_ok').f() is None
+            with expect_fail(PermissionError): audit_perms.add_imports('blocked_import')
+        audit_perms.add_imports('blocked_import')
+        with audit_perms(): assert import_mod('blocked_import').f() is None
+    finally: sys.path.remove(str(tmp_path))
 
 
 def test_call_tracker(tmp_path):
