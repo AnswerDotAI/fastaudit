@@ -163,7 +163,9 @@ def _new_state():
         if extra: fs.insert(0, extra)
         return ' -> '.join(reversed(fs))
 
-    def err_msg(event, args): return f"Audit: {event} blocked in sandbox\nCall chain: {call_chain(event, args)}"
+    def err_args(event, args): return args[:2] if event=='fastaudit.call' and len(args)>2 else args
+
+    def err_msg(event, args): return f"Audit: {event} blocked in sandbox with args: {err_args(event, args)}\nCall chain: {call_chain(event, args)}"
 
     def in_frame(mod, qual):
         f = getframe()

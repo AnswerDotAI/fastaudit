@@ -52,7 +52,7 @@ def test_audit_blocks(tmp_path):
     with working_directory(dotdest), mk_audit((okdest,'.'))():
         # Sensitive function mutation is blocked.
         def f(): pass
-        with expect_fail(PermissionError): f.__code__ = f.__code__
+        with expect_fail(PermissionError, "object.__setattr__ blocked in sandbox with args:"): f.__code__ = f.__code__
 
         # Reads outside approved roots are allowed.
         open('/etc/passwd', 'r').close()
@@ -73,7 +73,7 @@ def test_audit_blocks(tmp_path):
         with expect_fail(PermissionError): os.rename(outside, inside3)
         with expect_fail(PermissionError): os.rename(inside2, outside)
         os.remove(inside2)
-        with expect_fail(PermissionError, 'Audit: subprocess.Popen blocked in sandbox\nCall chain:'): subprocess.run(['echo', 'hi'])
+        with expect_fail(PermissionError, 'Audit: subprocess.Popen blocked in sandbox with args:'): subprocess.run(['echo', 'hi'])
 
         # "." allows writes under the current directory and chdir checks the destination.
         touch('dot-inside.txt')
