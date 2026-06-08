@@ -58,7 +58,7 @@ def test_audit_blocks(tmp_path):
         with expect_fail(PermissionError): os.rename(outside, inside3)
         with expect_fail(PermissionError): os.rename(inside2, outside)
         os.remove(inside2)
-        with expect_fail(PermissionError): subprocess.run(['echo', 'hi'])
+        with expect_fail(PermissionError, 'Audit: subprocess.Popen blocked in sandbox\nCall chain:'): subprocess.run(['echo', 'hi'])
 
         # "." allows writes under the current directory and chdir checks the destination.
         touch('dot-inside.txt')
@@ -91,7 +91,7 @@ def test_audit_blocks(tmp_path):
         assert orjson.dumps({'a': 1}) == b'{"a":1}'
         assert np.array([1, 2, 3]).sum() == 6
         assert regex.compile('a').match('a')
-        with expect_fail(PermissionError): exhash_file('exhash.txt', ['0|0000|a\nx'], inplace=True)
+        with expect_fail(PermissionError, 'test_core.test_audit_blocks -> exhash.exhash_file -> exhash._apply_file_command -> exhash.exhash -> exhash.exhash.exhash'): exhash_file('exhash.txt', ['0|0000|a\nx'], inplace=True)
         with expect_fail(PermissionError): partial(native_line_hash, 'x')()
 
         # Audit policy cannot be replaced from inside the sandbox.

@@ -129,6 +129,19 @@ def _new_state():
             if not frame_name(f).startswith('fastaudit.'): return f
             f = f.f_back
 
+    def call_chain(event=None, args=(), extra=None):
+        if event=='fastaudit.call' and len(args)>2: return args[2]
+        fs = []
+        f = getframe()
+        while f:
+            nm = frame_name(f)
+            if not nm.startswith('fastaudit.'): fs.append(nm)
+            f = f.f_back
+        if extra: fs.insert(0, extra)
+        return ' -> '.join(reversed(fs))
+
+    def err_msg(event, args): return f"Audit: {event} blocked in sandbox\nCall chain: {call_chain(event, args)}"
+
     def in_frame(mod, qual):
         f = getframe()
         while f:
@@ -155,11 +168,10 @@ def _new_state():
     def chk(cfg, event, args):
         if event in audit_allow or event.startswith(audit_allow_prefix): return
         if event=='_thread.start_new_thread' and asyncio_executor_thread(args): return
-        errstr = f"Audit: {event} blocked in sandbox with args: {args}"
-        if event not in audit_check: return deny(cfg, event, args, errstr)
+        if event not in audit_check: return deny(cfg, event, args, err_msg(event, args))
         if event=='object.__setattr__':
             if args[1] in ('__bases__', '__class__', '__defaults__', '__doc__','__module__'): return
-            return deny(cfg, event, args, errstr)
+            return deny(cfg, event, args, err_msg(event, args))
         ps = []
         if event=='open':
             path,mode,flags = args
@@ -198,7 +210,7 @@ def _new_state():
             res = cfg.on_call(caller, callee, fn, code, off, cfg.data, get_active_calls())
             if res is mon.DISABLE: return mon.DISABLE
             if res is False: return
-        try: audit('fastaudit.call', caller, callee)
+        try: audit('fastaudit.call', caller, callee, call_chain(extra=callee))
         except PermissionError as e:
             e.__traceback__ = None
             raise
