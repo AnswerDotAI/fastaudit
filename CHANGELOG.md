@@ -1,5 +1,14 @@
 <!-- do not remove -->
 
+## 0.2.3
+
+### New Features
+
+- Add `pathlib.Path.walk` ([#17](https://github.com/AnswerDotAI/fastaudit/issues/17))
+- Add packaged monitor/audit hooks and import-allow entry points (with lxml monitor) ([#16](https://github.com/AnswerDotAI/fastaudit/issues/16))
+- Include call chain in audit denial error messages ([#15](https://github.com/AnswerDotAI/fastaudit/issues/15))
+- Allow additional dunder attributes in sandbox setattr audit ([#14](https://github.com/AnswerDotAI/fastaudit/pull/14)), thanks to [@kafkasl](https://github.com/kafkasl)
+
 
 ## 0.2.2
 
