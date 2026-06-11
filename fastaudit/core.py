@@ -16,7 +16,7 @@ _audit_allow = {'array.__new__', 'builtins.breakpoint', 'builtins.id', 'builtins
     'cpython.run_interactivehook', 'exec', 'fcntl.', 'ftplib.', 'function.__new__', 'gc.', 'glob.glob', 'glob.glob/2', 'imaplib.', 'import',
     'marshal.', 'mmap.__new__', 'object.__delattr__', 'object.__getattr__', 'os.fork', 'os.forkpty', 'os.fwalk', 'os.getxattr', 'os.listdir',
     'os.listdrives', 'os.listmounts', 'os.listvolumes', 'os.listxattr', 'os.lockf', 'os.scandir', 'os.utime', 'os.walk', 'pathlib.Path.glob',
-    'pathlib.Path.rglob', 'pdb.Pdb', 'pickle.find_class', 'poplib.', 'resource.prlimit', 'resource.setrlimit', 'setopencodehook', 'smtplib.',
+    'pathlib.Path.rglob', 'pathlib.Path.walk', 'pdb.Pdb', 'pickle.find_class', 'poplib.', 'resource.prlimit', 'resource.setrlimit', 'setopencodehook', 'smtplib.',
     'sqlite3.connect/handle', 'sqlite3.enable_load_extension', 'sys._current_exceptions', 'sys._current_frames', 'sys._getframe',
     'sys._getframemodulename', 'sys.set_asyncgen_hooks_finalizer', 'sys.set_asyncgen_hooks_firstiter', 'sys.setprofile', 'sys.settrace',
     'syslog.closelog', 'syslog.openlog', 'syslog.setlogmask', 'syslog.syslog', 'time.sleep', 'urllib.Request', 'webbrowser.open',
