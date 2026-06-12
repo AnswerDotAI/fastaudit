@@ -1,5 +1,12 @@
 <!-- do not remove -->
 
+## 0.2.4
+
+### New Features
+
+- Deny env var changes affecting process/import behavior; allow safe socket lookups ([#19](https://github.com/AnswerDotAI/fastaudit/issues/19))
+
+
 ## 0.2.3
 
 ### New Features
