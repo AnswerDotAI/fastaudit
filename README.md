@@ -75,6 +75,8 @@ Reads are generally allowed.
 
 Subprocess creation and similar process escapes are denied by default.
 
+Most environment-variable updates are allowed. Variables that affect command lookup, Python/import behavior, dynamic loading, virtual environments, home/user identity, shell selection, or temp directories are denied unless `before_deny` allows them.
+
 Thread creation is denied by default, with one narrow compatibility exception: asyncio may lazily create its default executor thread from `BaseEventLoop.run_in_executor`, for example while resolving DNS. `fastaudit` allows that `asyncio_` worker thread start, but does not allow general user-created threads.
 
 The allowed root `'.'` is dynamic: it means the current directory at the time of each checked operation. This lets a sandbox follow allowed `chdir` calls into child directories. `os.chdir` itself is checked against the destination directory, not the destination's parent.

@@ -137,7 +137,9 @@ def test_expanduser_allowed_path(tmp_path, monkeypatch):
 
     assert target.read_text() == 'x'
 def test_callbacks(tmp_path):
-    def before_deny(event, args, frame, msg, data, calls): return event=='subprocess.Popen' and args[1][:1]==['echo'] or event=='fastaudit.ddl' and args==('ok',)
+    def before_deny(event, args, frame, msg, data, calls):
+        return (event=='subprocess.Popen' and args[1][:1]==['echo'] or event=='fastaudit.ddl' and args==('ok',)
+            or event=='os.putenv' and os.fsdecode(args[0])=='PATH')
     def on_call(caller, callee, fn, code, off, data, calls):
         if callee.startswith('exhash.'): return sys.monitoring.DISABLE
 
@@ -151,6 +153,12 @@ def test_callbacks(tmp_path):
         sys.audit('fastaudit.test_hook', 'ok')
         sys.audit('fastaudit.ddl', 'ok')
         with expect_fail(PermissionError): sys.audit('fastaudit.dml', 'delete')
+
+        # Env changes are allowed unless they affect process/import behavior, and callbacks can override.
+        os.putenv('FASTAUDIT_ENV_OK', '1')
+        os.unsetenv('FASTAUDIT_ENV_OK')
+        with expect_fail(PermissionError): os.putenv('PYTHONPATH', 'x')
+        os.putenv('PATH', os.environ.get('PATH', ''))
 
         # Host callbacks can allow audit events.
         res = subprocess.run(['echo', 'hi'], capture_output=True, text=True)

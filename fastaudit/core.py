@@ -12,16 +12,20 @@ _audit_dst = {'shutil.copyfile', 'shutil.copymode', 'shutil.copystat', 'shutil.c
 _audit_both = {'os.link', 'os.rename', 'os.symlink', 'shutil.move', 'shutil.unpack_archive'}
 
 _audit_allow = {'array.__new__', 'builtins.breakpoint', 'builtins.id', 'builtins.input', 'builtins.input/result', 'code.__new__', 'compile',
-    # 'http.client.', 'socket.',
+    # 'http.client.',
     'cpython.run_interactivehook', 'exec', 'fcntl.', 'ftplib.', 'function.__new__', 'gc.', 'glob.glob', 'glob.glob/2', 'imaplib.', 'import',
     'marshal.', 'mmap.__new__', 'object.__delattr__', 'object.__getattr__', 'os.fork', 'os.forkpty', 'os.fwalk', 'os.getxattr', 'os.listdir',
     'os.listdrives', 'os.listmounts', 'os.listvolumes', 'os.listxattr', 'os.lockf', 'os.scandir', 'os.utime', 'os.walk', 'pathlib.Path.glob',
     'pathlib.Path.rglob', 'pathlib.Path.walk', 'pdb.Pdb', 'pickle.find_class', 'poplib.', 'resource.prlimit', 'resource.setrlimit', 'setopencodehook', 'smtplib.',
-    'sqlite3.connect/handle', 'sqlite3.enable_load_extension', 'sys._current_exceptions', 'sys._current_frames', 'sys._getframe',
-    'sys._getframemodulename', 'sys.set_asyncgen_hooks_finalizer', 'sys.set_asyncgen_hooks_firstiter', 'sys.setprofile', 'sys.settrace',
+    'socket.__new__', 'socket.getaddrinfo', 'socket.gethostbyaddr', 'socket.gethostbyname', 'socket.gethostname', 'socket.getnameinfo',
+    'socket.getservbyname', 'socket.getservbyport', 'sqlite3.connect/handle', 'sqlite3.enable_load_extension', 'sys._current_exceptions',
+    'sys._current_frames', 'sys._getframe', 'sys._getframemodulename', 'sys.set_asyncgen_hooks_finalizer', 'sys.set_asyncgen_hooks_firstiter', 'sys.setprofile', 'sys.settrace',
     'syslog.closelog', 'syslog.openlog', 'syslog.setlogmask', 'syslog.syslog', 'time.sleep', 'urllib.Request', 'webbrowser.open',
     'winreg.ConnectRegistry', 'winreg.EnumKey', 'winreg.EnumValue', 'winreg.ExpandEnvironmentStrings', 'winreg.OpenKey',
     'winreg.OpenKey/result', 'winreg.PyHKEY.Detach', 'winreg.QueryInfoKey', 'winreg.QueryReflectionKey', 'winreg.QueryValue'}
+_env_deny = {'PATH', 'LD_LIBRARY_PATH', 'DYLD_LIBRARY_PATH', 'DYLD_INSERT_LIBRARIES', 'VIRTUAL_ENV', 'CONDA_PREFIX', 'HOME', 'USER',
+    'LOGNAME', 'SHELL', 'TMPDIR', 'TEMP', 'TMP'}
+_env_deny_prefix = ('PYTHON','PIP_','UV_')
 
 _AuditCfg = namedtuple('AuditCfg', 'oks before_deny on_call data monitor_calls import_allow')
 TrackedCall = namedtuple('TrackedCall', 'fn args kwargs module qualname name')
@@ -152,6 +156,11 @@ def _new_state():
             if spec_initializing(g.get('__spec__')) and module_allowed(g.get('__name__'), allowed): return True
             f = f.f_back
 
+    def env_denied(k):
+        try: k = fsdecode(k).upper()
+        except (OSError,TypeError,ValueError): return True
+        return k in _env_deny or k.startswith(_env_deny_prefix)
+
     def call_chain(event=None, args=(), extra=None):
         if event=='fastaudit.call' and len(args)>2: return args[2]
         fs = []
@@ -196,9 +205,12 @@ def _new_state():
 
     def chk(cfg, event, args):
         if event in audit_allow or event.startswith(audit_allow_prefix): return
-        if event=='_thread.start_new_thread' and asyncio_executor_thread(args): return
+        if event in ('_thread.start_new_thread','_thread.start_joinable_thread') and asyncio_executor_thread(args): return
         if event.startswith('audit_perms.'): return deny(cfg, event, args, err_msg(event, args))
         if importing_allowed_module(cfg.import_allow): return
+        if event in ('os.putenv','os.unsetenv'):
+            if env_denied(args[0]): return deny(cfg, event, args, err_msg(event, args))
+            return
         if event not in audit_check: return deny(cfg, event, args, err_msg(event, args))
         if event=='object.__setattr__':
             if args[1] in ('__bases__', '__class__', '__defaults__', '__doc__','__module__'): return
