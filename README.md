@@ -56,6 +56,8 @@ For adversarial code, use a subprocess, container, VM, or OS-level policy.
 
 Auditing is opt-in per logical task. The audit hook is registered globally when the first audit context is created, and the optional call monitor is registered globally when needed, but permission checks only run while `audit_perms()` is active. This matters for async code. A global boolean or counter would leak audit state between unrelated coroutines whenever one audited task awaits. A `ContextVar` gives logical scoping: child tasks inherit at creation time, nested contexts restore cleanly via tokens, and the guard follows execution flow rather than scheduler order. Threads are denied in the audit sandbox since context variables otherwise are not maintained.
 
+Entering `audit_perms()` records its origin: thread id, thread name, current asyncio task, and the call chain at entry. When an operation is denied in a different thread or task than the one that entered the context — a leaked or inherited context copy — the error message appends a note saying where the audit context was entered. Same-stack denials omit the note, since their call chain already shows the origin. This makes context propagation problems self-diagnosing: a deny far from its origin names the tool call that created the context.
+
 The hook is built once inside a closure rather than read from module globals on every event. Allowed roots and callbacks live in the active context config, the event-classification sets are converted to `frozenset`, and the helpers used in the hot path — `realpath`, `dirname`, `fsdecode`, `os.sep` — are captured as local names. Nothing the hook depends on lives in a mutable global that a generated cell could clear, replace, or reassign. This is not a security barrier against introspection or frame walking; it is a deliberate effort to remove the easy, accidental disabling paths that an enthusiastic LLM is most likely to take when retrying after a `PermissionError`.
 
 ## Permission model
@@ -81,7 +83,9 @@ Thread creation is denied by default, with one narrow compatibility exception: a
 
 The allowed root `'.'` is dynamic: it means the current directory at the time of each checked operation. This lets a sandbox follow allowed `chdir` calls into child directories. `os.chdir` itself is checked against the destination directory, not the destination's parent.
 
-Non-stdlib native calls raise a `fastaudit.call` audit event while `audit_perms()` is active when `monitor_calls=True`. Python calls, stdlib calls, safe native entry point prefixes, and packaged monitor-hook suppressions are ignored by the call monitor. The context manager calls `sys.monitoring.restart_events()` on entry so monitored call sites disabled before the context are seen again inside it. With `monitor_calls=False`, only normal Python audit-hook events are checked.
+Non-stdlib native calls raise a `fastaudit.call` audit event while `audit_perms()` is active when `monitor_calls=True`. Python calls, stdlib calls, safe native entry point prefixes, and packaged monitor-hook suppressions are ignored by the call monitor. With `monitor_calls=False`, only normal Python audit-hook events are checked.
+
+`CALL` instrumentation is only physically enabled while at least one monitoring context is active. Context entry and exit maintain a refcount: the first entry calls `sys.monitoring.set_events()` to turn `CALL` events on, and the last exit turns them off again. Between audit contexts, code objects lazily de-instrument and all code — including native-call-heavy user code whose modules are not declared safe — runs with zero monitoring overhead. Each entry also calls `sys.monitoring.restart_events()` so monitored call sites disabled in an earlier context are seen again inside the new one. Keeping events globally on while any context is active (rather than disabling unmatched call sites from non-audited code) means concurrent non-audited code cannot blind an active context to a shared call site.
 
 Native modules can declare safe call prefixes with the `fastaudit_safe_native` entry point group:
 
@@ -157,7 +161,7 @@ def before_deny(event, args, frame, msg, data, calls):
 
 Finished calls are marked inactive, so copied async contexts in child tasks do not keep stale permissions alive after the wrapped call returns.
 
-`audit_state()` returns a small debug snapshot of the closed-over audit state, including `safe_native`, `import_allow`, `monitoring`, `tool_id`, `active`, and `monitor_calls`.
+`audit_state()` returns a small debug snapshot of the closed-over audit state, including `safe_native`, `import_allow`, `monitoring`, `tool_id`, `active`, `monitor_on` (the count of active monitoring contexts), and `monitor_calls`.
 
 `mk_audit()` uses `sys.monitoring` tool id `3` by default when call monitoring is enabled. Pass `tool_id=...` if the host already uses that id.
 

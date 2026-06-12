@@ -1,4 +1,4 @@
-import asyncio, importlib, nbformat, numpy as np, orjson, os, pytest, regex, shutil, subprocess, sys, traceback
+import asyncio, contextvars, importlib, nbformat, numpy as np, orjson, os, pytest, regex, shutil, subprocess, sys, threading, traceback
 from exhash import exhash_file
 from exhash.exhash import line_hash as native_line_hash
 from fastcore.basics import Self
@@ -270,3 +270,51 @@ def test_implement_allow_list(tmp_path):
     audit_perms.set_data(frozenset())
     with audit_perms():
         with expect_fail(PermissionError): trusted_echo()
+
+
+def test_deny_origin_telemetry(tmp_path):
+    audit_perms = mk_audit([tmp_path], monitor_calls=False)
+
+    # Same-stack denies carry no origin note: the call chain already shows it.
+    with audit_perms():
+        try: subprocess.run(['echo', 'hi'])
+        except PermissionError as e: msg = str(e)
+    assert 'blocked in sandbox' in msg
+    assert 'Audit context entered' not in msg
+
+    # A context copy leaked to another thread reports where the context was entered.
+    with audit_perms(): snap = contextvars.copy_context()
+    res = []
+    def run():
+        try: snap.run(subprocess.run, ['echo', 'hi'])
+        except PermissionError as e: res.append(str(e))
+    t = threading.Thread(target=run)
+    t.start()
+    t.join(timeout=2)
+    assert res and 'Audit context entered in thread' in res[0]
+    assert 'test_deny_origin_telemetry' in res[0].split('Audit context entered')[1]
+
+
+def test_deny_origin_task(tmp_path):
+    audit_perms = mk_audit([tmp_path], monitor_calls=False)
+    async def inner():
+        try: subprocess.run(['echo', 'hi'])
+        except PermissionError as e: return str(e)
+    async def main():
+        with audit_perms(): t = asyncio.create_task(inner())
+        return await t
+    msg = asyncio.run(main())
+    assert 'Audit context entered in thread' in msg
+
+
+def test_monitor_events_toggle(tmp_path):
+    audit_perms = mk_audit([tmp_path])
+    tid = audit_state()['tool_id']
+    CALL = sys.monitoring.events.CALL
+    assert sys.monitoring.get_events(tid) == 0
+    with audit_perms():
+        assert sys.monitoring.get_events(tid) == CALL
+        with audit_perms(): assert sys.monitoring.get_events(tid) == CALL
+        assert sys.monitoring.get_events(tid) == CALL
+    assert sys.monitoring.get_events(tid) == 0
+    with mk_audit([tmp_path], monitor_calls=False)(): assert sys.monitoring.get_events(tid) == 0

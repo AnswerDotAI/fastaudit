@@ -1,4 +1,4 @@
-import functools, inspect, os, sys, types
+import asyncio, functools, inspect, os, sys, threading, types
 from fastcore.utils import *
 from collections import namedtuple
 from contextlib import contextmanager
@@ -78,7 +78,9 @@ def _new_state():
     audit_allow = frozenset(o for o in _audit_allow if not o.endswith('.'))
     audit_allow_prefix = tuple(o for o in _audit_allow if o.endswith('.'))
     audit_check = audit_1st|audit_dst|audit_both|{'open','os.chdir','os.truncate','object.__setattr__'}
+    octx = ContextVar('fastaudit_origin', default=None)
     realpath,dirname,fsdecode,sep,getframe = os.path.realpath,os.path.dirname,os.fsdecode,os.sep,sys._getframe
+    get_ident,cur_thread = threading.get_ident,threading.current_thread
     mon,audit,stdlib = getattr(sys, 'monitoring', None),sys.audit,frozenset(sys.stdlib_module_names)
     def clean_mods(ms):
         if isinstance(ms, str): ms = (ms,)
@@ -89,7 +91,8 @@ def _new_state():
     monitor_hooks = tuple(ep.load() for ep in entry_points(group='fastaudit_monitor_hook')) if mon else ()
     audit_hooks = tuple(ep.load() for ep in entry_points(group='fastaudit_audit_hook'))
     get_active_calls = active_calls
-    state = {'tool_id':None}
+    state = {'tool_id':None, 'on':0}
+    mlock = threading.Lock()
 
     def frame_name(f): return f"{f.f_globals.get('__name__')}.{f.f_code.co_qualname}"
 
@@ -186,7 +189,19 @@ def _new_state():
         t = getattr(args[0], '__self__', None)
         return getattr(t, 'name', '').startswith('asyncio_') and in_frame('asyncio.base_events', 'BaseEventLoop.run_in_executor')
 
+    def cur_task():
+        try: return id(asyncio.current_task())
+        except RuntimeError: return None
+
+    def origin_note():
+        o = octx.get()
+        if o is None: return ''
+        tid,tname,task,chain = o
+        if tid==get_ident() and task==cur_task(): return ''
+        return f"\nAudit context entered in thread {tname!r} by: {chain}"
+
     def deny(cfg, event, args, msg):
+        msg += origin_note()
         if audit_hooks or cfg.before_deny:
             frame,calls = external_frame(),get_active_calls()
             for h in audit_hooks:
@@ -276,12 +291,22 @@ def _new_state():
         elif tool: raise RuntimeError(f'sys.monitoring tool id {tool_id} is already used by {tool!r}')
         mon.use_tool_id(tool_id, 'fastaudit')
         mon.register_callback(tool_id, mon.events.CALL, call_cb)
-        mon.set_events(tool_id, mon.events.CALL)
         state['tool_id'] = tool_id
+
+    def monitor_on():
+        with mlock:
+            state['on'] += 1
+            if state['on']==1: mon.set_events(state['tool_id'], mon.events.CALL)
+        mon.restart_events()
+
+    def monitor_off():
+        with mlock:
+            state['on'] -= 1
+            if not state['on']: mon.set_events(state['tool_id'], 0)
 
     def audit_state_():
         cfg = ctx.get()
-        return dict(safe_native=safe_native, monitoring=mon is not None, tool_id=state['tool_id'], active=cfg is not None,
+        return dict(safe_native=safe_native, monitoring=mon is not None, tool_id=state['tool_id'], active=cfg is not None, monitor_on=state['on'],
             monitor_calls=None if cfg is None else cfg.monitor_calls, import_allow=import_allow if cfg is None else cfg.import_allow)
 
     def mk_audit_(oks, before_deny=None, on_call=None, data=None, tool_id=3, monitor_calls=True, allow_imports=()):
@@ -297,9 +322,14 @@ def _new_state():
             old = ctx.get()
             if old is not cfg: audit('audit_perms.set_config', cfg)
             tok = ctx.set(cfg)
-            if cfg.monitor_calls: mon.restart_events()
+            otok = octx.set((get_ident(), cur_thread().name, cur_task(), call_chain()))
+            mc = cfg.monitor_calls
+            if mc: monitor_on()
             try: yield
-            finally: ctx.reset(tok)
+            finally:
+                octx.reset(otok)
+                ctx.reset(tok)
+                if mc: monitor_off()
 
         def set_data(d):
             nonlocal cfg
