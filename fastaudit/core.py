@@ -228,7 +228,7 @@ def _new_state():
             return
         if event not in audit_check: return deny(cfg, event, args, err_msg(event, args))
         if event=='object.__setattr__':
-            if args[1] in ('__bases__', '__class__', '__defaults__', '__doc__','__module__'): return
+            if args[1] in ('__qualname__', '__bases__', '__class__', '__defaults__', '__doc__','__module__'): return
             return deny(cfg, event, args, err_msg(event, args))
         ps = []
         if event=='open':

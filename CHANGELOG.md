@@ -1,5 +1,12 @@
 <!-- do not remove -->
 
+## 0.2.5
+
+### New Features
+
+- Add deny-origin telemetry and refcounted CALL monitoring toggle ([#20](https://github.com/AnswerDotAI/fastaudit/issues/20))
+
+
 ## 0.2.4
 
 ### New Features
