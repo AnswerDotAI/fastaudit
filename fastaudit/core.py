@@ -36,7 +36,9 @@ class _ActiveCall:
     def __init__(self, call): self.call,self.active = call,True
 
 class CallTracker:
-    def __init__(self, name='fastaudit_active_calls'): self.ctx = ContextVar(name, default=())
+    def __init__(self, name='fastaudit_active_calls', on_enter=None):
+        self.ctx = ContextVar(name, default=())
+        self.on_enter = on_enter
 
     def _call(self, fn, args=(), kwargs=None):
         if args is None: args = ()
@@ -61,6 +63,7 @@ class CallTracker:
         if getattr(fn, '_fastaudit_orig', None) is not None or not inspect.iscoroutinefunction(fn): return fn
         @wraps(fn)
         async def _fn(*args, **kwargs):
+            if self.on_enter is not None: self.on_enter(fn, args, kwargs)
             with self.track(fn, args, kwargs): return await fn(*args, **kwargs)
         _fn._fastaudit_orig = fn
         return _fn
@@ -69,6 +72,10 @@ class CallTracker:
 _default_call_tracker = CallTracker()
 track_call = _default_call_tracker.wrap
 active_calls = _default_call_tracker.active
+
+def set_enter_hook(fn):
+    "Set an optional call-entry hook on the default tracker; runs before each wrapped call's body (may raise)."
+    _default_call_tracker.on_enter = fn
 
 
 def _new_state():
