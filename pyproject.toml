@@ -13,7 +13,7 @@ license = { text = "Apache-2.0" }
 authors = [{ name = "Answer.AI" }]
 classifiers = [ "Programming Language :: Python :: 3", "Programming Language :: Python :: 3 :: Only", ]
 
-dependencies = [ "fastcore", ]
+dependencies = [ "fastcore>=1.14.5", ]
 
 [project.optional-dependencies]
 dev = [ "pytest", "orjson", "numpy", "nbformat", "regex", "exhash", "cython", "lxml", "fastship", "build", "twine", ]

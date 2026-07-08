@@ -1,4 +1,4 @@
-import asyncio, contextvars, importlib, nbformat, numpy as np, orjson, os, pytest, regex, shutil, subprocess, sys, threading, traceback
+import asyncio, contextvars, fastaudit.core as core, importlib, nbformat, numpy as np, orjson, os, pytest, regex, shutil, subprocess, sys, threading, traceback
 from exhash import exhash_file
 from exhash.exhash import line_hash as native_line_hash
 from fastcore.basics import Self
@@ -6,30 +6,19 @@ from fastcore.foundation import working_directory
 from fastcore.test import expect_fail
 from fastaudit.core import active_calls,audit_state,mk_audit,track_call
 from functools import lru_cache,partial
+from importlib.metadata import EntryPoint,entry_points
 from lxml import etree
 from os.path import join,realpath,expanduser
 
 
 @pytest.fixture(scope='session', autouse=True)
-def _safe_native_entrypoints(tmp_path_factory):
-    p = tmp_path_factory.mktemp('safe_native')/'safe-0.dist-info'
-    p.mkdir()
-    (p/'entry_points.txt').write_text("""[fastaudit_safe_native]
-_regex = _regex
-numpy = numpy
-orjson = orjson
-rpds = rpds
-regex_regex = regex._regex
-[fastaudit_monitor_hook]
-lxml = fastaudit.hooks:lxml_monitor
-[fastaudit_audit_hook]
-test_core = test_core:allow_test_audit_event
-[fastaudit_import_allow]
-entry_import_ok = entry_import_ok
-""")
-    sys.path.insert(0, str(p.parent))
+def _pin_entrypoints():
+    "Pin the entry points fastaudit reads, so entries from installed packages can't change test behavior"
+    groups = dict(fastaudit_safe_native=('_regex','numpy','orjson','rpds','regex._regex'), fastaudit_import_allow=('entry_import_ok',),
+        fastaudit_monitor_hook=('fastaudit.hooks:lxml_monitor',), fastaudit_audit_hook=('test_core:allow_test_audit_event',))
+    core.entry_points = lambda group: tuple(EntryPoint(v, v, group) for v in groups.get(group, ()))
     yield
-    sys.path.remove(str(p.parent))
+    core.entry_points = entry_points
 
 def touch(p, s='x'):
     with open(p, 'w') as f: f.write(s)
@@ -93,10 +82,10 @@ def test_audit_blocks(tmp_path):
             def __call__(self): return 'ok'
         assert isinstance(Plain(), Plain)
         assert PyCallable()() == 'ok'
-        # fastcore.Self mutates in __getattr__, which call monitoring must not trigger.
+        # fastcore.Self builds chains in __getattr__; call monitoring must not add steps.
         s = Self.split(',')
         state = vars(s).copy()
-        assert s('a,b') == ['a', 'b']
+        assert (~s)('a,b') == ['a', 'b']
         assert vars(s) == state
         @lru_cache(maxsize=8)
         def cached(): return 'ok'
@@ -117,7 +106,7 @@ def test_audit_blocks(tmp_path):
         with expect_fail(PermissionError, 'lxml.etree._ElementTree.write_c14n'): tree.write_c14n('lxml-c14n.xml')
         with expect_fail(PermissionError, 'lxml.etree.xmlfile'): etree.xmlfile('lxml-file.xml')
         with expect_fail(PermissionError, 'lxml.etree._XSLTResultTree.write_output'): etree.XSLT(style)(xml).write_output('lxml-xslt.xml')
-        with expect_fail(PermissionError, 'test_core.test_audit_blocks -> exhash.exhash_file -> exhash._apply_file_command -> exhash.exhash -> exhash.exhash.exhash'): exhash_file('exhash.txt', ['0|0000|a\nx'], inplace=True)
+        with expect_fail(PermissionError, 'test_core.test_audit_blocks -> exhash.exhash_file'): exhash_file('exhash.txt', [('0|0000|', 'a', 'x')], inplace=True)
         with expect_fail(PermissionError): partial(native_line_hash, 'x')()
 
         # Audit policy cannot be replaced from inside the sandbox.
@@ -146,8 +135,8 @@ def test_callbacks(tmp_path):
     with mk_audit([tmp_path], before_deny=before_deny, on_call=on_call)():
         # Host callbacks can allow native calls beyond the entry-point allowlist.
         f = tmp_path/'exhash.txt'
-        exhash_file(str(f), ['0|0000|a\nx'], inplace=True)
-        assert f.read_text() == 'x\n'
+        exhash_file(str(f), [('0|0000|', 'a', 'x')], inplace=True)
+        assert f.read_text().strip() == 'x'
         # Host callbacks can also allow unknown or package-provided audit events.
         sys.audit('gc.get_objects', 0)
         sys.audit('fastaudit.test_hook', 'ok')
