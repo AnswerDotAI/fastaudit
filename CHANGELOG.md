@@ -1,5 +1,12 @@
 <!-- do not remove -->
 
+## 0.2.6
+
+### New Features
+
+- pandas ([#22](https://github.com/AnswerDotAI/fastaudit/issues/22))
+
+
 ## 0.2.5
 
 ### New Features
