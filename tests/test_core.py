@@ -1,4 +1,4 @@
-import asyncio, contextvars, fastaudit.core as core, importlib, nbformat, numpy as np, orjson, os, pytest, regex, shutil, subprocess, sys, threading, traceback
+import asyncio, contextvars, fastaudit.core as core, importlib, nbformat, numpy as np, orjson, os, pytest, regex, shutil, subprocess, sys, tempfile, threading, traceback
 from exhash import exhash_file
 from exhash.exhash import line_hash as native_line_hash
 from fastcore.basics import Self
@@ -82,6 +82,12 @@ def test_audit_blocks(tmp_path):
             def __call__(self): return 'ok'
         assert isinstance(Plain(), Plain)
         assert PyCallable()() == 'ok'
+        # A Python method reaching an inherited C method via super() (openpyxl's
+        # NamedStyleList.append -> list.append) attributes to builtins, not the subclass, so isn't blocked.
+        class MyList(list):
+            def append(self, x): super().append(x)
+        ml = MyList(); ml.append(1)
+        assert ml == [1]
         # fastcore.Self builds chains in __getattr__; call monitoring must not add steps.
         s = Self.split(',')
         state = vars(s).copy()
@@ -114,6 +120,15 @@ def test_audit_blocks(tmp_path):
         with expect_fail(PermissionError), permissive(): pass
 
 
+
+def test_tempfile_in_allowed_dir(tmp_path):
+    # CPython's NamedTemporaryFile passes `dir` as the path argument of `_io.open` (with an opener),
+    # so the audited event is open(<dir>, 'w+') — the directory itself. The parent-lifted check alone
+    # ascends outside the allowed root and denies it; the path's own realpath must also be accepted.
+    with mk_audit([tmp_path], monitor_calls=False)():
+        with tempfile.NamedTemporaryFile(dir=tmp_path) as f: f.write(b'x')
+        with tempfile.TemporaryFile(dir=tmp_path) as f: f.write(b'x')
+        with expect_fail(PermissionError): tempfile.NamedTemporaryFile(dir=expanduser('~'))
 
 def test_expanduser_allowed_path(tmp_path, monkeypatch):
     home = tmp_path/'home'
