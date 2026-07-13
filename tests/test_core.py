@@ -106,7 +106,7 @@ def test_audit_blocks(tmp_path):
         with expect_fail(PermissionError, 'lxml.etree._ElementTree.write_c14n'): tree.write_c14n('lxml-c14n.xml')
         with expect_fail(PermissionError, 'lxml.etree.xmlfile'): etree.xmlfile('lxml-file.xml')
         with expect_fail(PermissionError, 'lxml.etree._XSLTResultTree.write_output'): etree.XSLT(style)(xml).write_output('lxml-xslt.xml')
-        with expect_fail(PermissionError, 'test_core.test_audit_blocks -> exhash.exhash_file'): exhash_file('exhash.txt', [('0|0000|', 'a', 'x')], inplace=True)
+        with expect_fail(PermissionError, 'exhash.exhash_file -> exhash._apply_file_command'): exhash_file('exhash.txt', ('0|0000|', 'a', 'x'), inplace=True)
         with expect_fail(PermissionError): partial(native_line_hash, 'x')()
 
         # Audit policy cannot be replaced from inside the sandbox.
@@ -135,7 +135,7 @@ def test_callbacks(tmp_path):
     with mk_audit([tmp_path], before_deny=before_deny, on_call=on_call)():
         # Host callbacks can allow native calls beyond the entry-point allowlist.
         f = tmp_path/'exhash.txt'
-        exhash_file(str(f), [('0|0000|', 'a', 'x')], inplace=True)
+        exhash_file(str(f), ('0|0000|', 'a', 'x'), inplace=True)
         assert f.read_text().strip() == 'x'
         # Host callbacks can also allow unknown or package-provided audit events.
         sys.audit('gc.get_objects', 0)
