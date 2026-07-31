@@ -1,5 +1,6 @@
 <!-- do not remove -->
 
+
 ## 0.2.6
 
 ### New Features
@@ -81,4 +82,3 @@
 - Install audit hook once at import; move per-policy params into ContextVar-scoped config ([#3](https://github.com/AnswerDotAI/fastaudit/issues/3))
 - Support dynamic '.' in allowed roots and audit os.chdir against destination ([#2](https://github.com/AnswerDotAI/fastaudit/issues/2))
 - `monitor_calls`=True ([#1](https://github.com/AnswerDotAI/fastaudit/issues/1))
-
