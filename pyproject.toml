@@ -29,6 +29,12 @@ pandas = "pandas._libs"
 rpds = "rpds"
 pydantic = "pydantic_core"
 regex_regex = "regex._regex"
+matplotlib = "matplotlib"
+kiwisolver = "kiwisolver"
+contourpy = "contourpy"
+PIL = "PIL"
+numexpr = "numexpr"
+bottleneck = "bottleneck"
 
 [project.entry-points.fastaudit_monitor_hook]
 lxml = "fastaudit.hooks:lxml_monitor"
