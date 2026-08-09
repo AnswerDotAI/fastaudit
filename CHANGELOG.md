@@ -1,5 +1,11 @@
 <!-- do not remove -->
 
+## 0.2.8
+
+### New Features
+
+- Add more native entry points ([#24](https://github.com/AnswerDotAI/fastaudit/issues/24))
+
 
 ## 0.2.6
 
