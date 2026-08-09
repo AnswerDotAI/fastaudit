@@ -97,11 +97,12 @@ def _new_state():
     def frame_name(f): return f"{f.f_globals.get('__name__')}.{f.f_code.co_qualname}"
 
     def owner_mod(fn, obj):
-        "Find inherited C method owners, e.g. NotebookNode.get -> dict.get."
+        "Module of inherited C method `fn` on `obj`; skip Python overrides so a `super()` call to a builtin (NamedStyleList.append -> list.append) attributes to builtins, not the subclass."
         nm = getattr(fn, '__name__', None)
         if not nm: return
         for cls in type(obj).__mro__:
-            if nm in cls.__dict__: return getattr(cls, '__module__', None)
+            m = cls.__dict__.get(nm)
+            if m is not None and not isinstance(m, types.FunctionType): return getattr(cls, '__module__', None)
 
     def func_mod(fn):
         fn = unwrap_call(fn)
@@ -228,7 +229,7 @@ def _new_state():
             return
         if event not in audit_check: return deny(cfg, event, args, err_msg(event, args))
         if event=='object.__setattr__':
-            if args[1] in ('__qualname__', '__bases__', '__class__', '__defaults__', '__doc__','__module__'): return
+            if args[1] in ('__name__', '__qualname__', '__bases__', '__class__', '__defaults__', '__doc__','__module__'): return
             return deny(cfg, event, args, err_msg(event, args))
         ps = []
         if event=='open':
@@ -246,7 +247,8 @@ def _new_state():
         elif event in audit_dst: ps = [args[1]]
         elif event in audit_both: ps = args[:2]
         for p in ps:
-            if not ok_path(cfg, p, parent=True): deny(cfg, event, args, f"{event} {p!r} not in {cfg.oks}")
+            # NamedTemporaryFile audits open(<dir>,'w+') with the directory as the path, so also accept p itself
+            if not (ok_path(cfg, p, parent=True) or ok_path(cfg, p)): deny(cfg, event, args, f"{event} {p!r} not in {cfg.oks}")
 
     def hook(event, args):
         cfg = ctx.get()
