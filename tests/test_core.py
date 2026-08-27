@@ -1,5 +1,5 @@
 import asyncio, contextvars, fastaudit.core as core, importlib, nbformat, numpy as np, orjson, os, pytest, regex, shutil, subprocess, sys, tempfile, threading, traceback
-from exhash import exhash_file
+from exhash import file_exhash
 from exhash.exhash import line_hash as native_line_hash
 from fastcore.basics import Self
 from fastcore.foundation import working_directory
@@ -112,7 +112,7 @@ def test_audit_blocks(tmp_path):
         with expect_fail(PermissionError, 'lxml.etree._ElementTree.write_c14n'): tree.write_c14n('lxml-c14n.xml')
         with expect_fail(PermissionError, 'lxml.etree.xmlfile'): etree.xmlfile('lxml-file.xml')
         with expect_fail(PermissionError, 'lxml.etree._XSLTResultTree.write_output'): etree.XSLT(style)(xml).write_output('lxml-xslt.xml')
-        with expect_fail(PermissionError, 'exhash.exhash_file -> exhash._apply_file_command'): exhash_file('exhash.txt', ('0|0000|', 'a', 'x'), inplace=True)
+        with expect_fail(PermissionError, 'exhash.file_exhash -> exhash.'): file_exhash('exhash.txt', ('0|0000|', 'a', 'x'), inplace=True)
         with expect_fail(PermissionError): partial(native_line_hash, 'x')()
 
         # Audit policy cannot be replaced from inside the sandbox.
@@ -150,7 +150,7 @@ def test_callbacks(tmp_path):
     with mk_audit([tmp_path], before_deny=before_deny, on_call=on_call)():
         # Host callbacks can allow native calls beyond the entry-point allowlist.
         f = tmp_path/'exhash.txt'
-        exhash_file(str(f), ('0|0000|', 'a', 'x'), inplace=True)
+        file_exhash(str(f), ('0|0000|', 'a', 'x'), inplace=True)
         assert f.read_text().strip() == 'x'
         # Host callbacks can also allow unknown or package-provided audit events.
         sys.audit('gc.get_objects', 0)
@@ -193,6 +193,12 @@ def test_allowed_import_side_effects(tmp_path):
             with expect_fail(PermissionError): audit_perms.add_imports('blocked_import')
         audit_perms.add_imports('blocked_import')
         with audit_perms(): assert import_mod('blocked_import').f() is None
+
+        # Passing `data` with an `import_approved` list records the events the allowance let through.
+        rec = []
+        with mk_audit([tmp_path], allow_imports=('runtime_import_ok',), monitor_calls=False, data=dict(import_approved=rec))():
+            import_mod('runtime_import_ok')
+        assert any(ev=='object.__setattr__' for ev,_ in rec)
     finally: sys.path.remove(str(tmp_path))
 
 
