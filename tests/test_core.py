@@ -86,7 +86,8 @@ def test_audit_blocks(tmp_path):
         # NamedStyleList.append -> list.append) attributes to builtins, not the subclass, so isn't blocked.
         class MyList(list):
             def append(self, x): super().append(x)
-        ml = MyList(); ml.append(1)
+        ml = MyList()
+        ml.append(1)
         assert ml == [1]
         # fastcore.Self builds chains in __getattr__; call monitoring must not add steps.
         s = Self.split(',')
@@ -112,7 +113,7 @@ def test_audit_blocks(tmp_path):
         with expect_fail(PermissionError, 'lxml.etree._ElementTree.write_c14n'): tree.write_c14n('lxml-c14n.xml')
         with expect_fail(PermissionError, 'lxml.etree.xmlfile'): etree.xmlfile('lxml-file.xml')
         with expect_fail(PermissionError, 'lxml.etree._XSLTResultTree.write_output'): etree.XSLT(style)(xml).write_output('lxml-xslt.xml')
-        with expect_fail(PermissionError, 'exhash.file_exhash -> exhash.'): file_exhash('exhash.txt', ('0|0000|', 'a', 'x'), inplace=True)
+        with expect_fail(PermissionError, 'exhash.file_exhash -> exhash.exhash.edit_buffers'): file_exhash('exhash.txt', ('0|0000|', 'a', 'x'), inplace=True)
         with expect_fail(PermissionError): partial(native_line_hash, 'x')()
 
         # Audit policy cannot be replaced from inside the sandbox.
