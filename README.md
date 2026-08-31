@@ -218,8 +218,7 @@ The goal is not to make escape impossible. The goal is to make the safe path eas
 
 ## Release
 
-1) Ensure your GitHub issues are labeled (`bug`, `enhancement`, `breaking`).
-2) Run:
+1) Ensure your GitHub issues are labeled (`bug`, `enhancement`, `breaking`). 2) Run:
 
 ```bash
 ship-gh
