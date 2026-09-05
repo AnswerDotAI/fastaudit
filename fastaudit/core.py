@@ -223,7 +223,9 @@ def _new_state():
         if event in audit_allow or event.startswith(audit_allow_prefix): return
         if event in ('_thread.start_new_thread','_thread.start_joinable_thread') and asyncio_executor_thread(args): return
         if event.startswith('audit_perms.'): return deny(cfg, event, args, err_msg(event, args))
-        if importing_allowed_module(cfg.import_allow): return
+        if importing_allowed_module(cfg.import_allow):
+            if (rec := (cfg.data or {}).get('import_approved')) is not None: rec.append((event, args))
+            return
         if event in ('os.putenv','os.unsetenv'):
             if env_denied(args[0]): return deny(cfg, event, args, err_msg(event, args))
             return

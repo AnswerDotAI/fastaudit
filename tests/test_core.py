@@ -194,6 +194,12 @@ def test_allowed_import_side_effects(tmp_path):
             with expect_fail(PermissionError): audit_perms.add_imports('blocked_import')
         audit_perms.add_imports('blocked_import')
         with audit_perms(): assert import_mod('blocked_import').f() is None
+
+        # Passing `data` with an `import_approved` list records the events the allowance let through.
+        rec = []
+        with mk_audit([tmp_path], allow_imports=('runtime_import_ok',), monitor_calls=False, data=dict(import_approved=rec))():
+            import_mod('runtime_import_ok')
+        assert any(ev=='object.__setattr__' for ev,_ in rec)
     finally: sys.path.remove(str(tmp_path))
 
 

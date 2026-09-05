@@ -115,7 +115,7 @@ Some packages have import-time side effects that raise sensitive audit events. F
 mypkg = "mypkg"
 ```
 
-The entries are module prefixes, so `mypkg` also covers `mypkg.submodule`. `fastaudit` does not import these modules when reading metadata. During an audit context, if the stack contains a frame for an allowed module whose `__spec__` is currently initializing, audit events from that import are allowed. Hosts can also pass `allow_imports=('mypkg',)` to `mk_audit()` or call `audit_perms.add_imports('mypkg')` outside the sandbox.
+The entries are module prefixes, so `mypkg` also covers `mypkg.submodule`. `fastaudit` does not import these modules when reading metadata. During an audit context, if the stack contains a frame for an allowed module whose `__spec__` is currently initializing, audit events from that import are allowed. Hosts can also pass `allow_imports=('mypkg',)` to `mk_audit()` or call `audit_perms.add_imports('mypkg')` outside the sandbox. A host that passes `data=` with an `import_approved` list gets every event the allowance let through appended to it as `(event, args)`, so it can reconcile what a trusted import did.
 
 ### get/set attr hooks
 
