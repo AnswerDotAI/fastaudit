@@ -2,19 +2,19 @@
 
 `fastaudit` is a lightweight execution guard for running LLM-generated Python in a normal Python process.
 
-It is not intended to be a hardened adversarial sandbox. Its purpose is to stop accidental damage from overly broad file operations, unexpected subprocess calls, and tool use that reaches outside approved working directories.
+It aims to prevent accidental damage from broad file operations, unexpected subprocess calls, and tool use outside approved working directories. It is not a hardened sandbox for adversarial code.
 
-The core mechanism is Python's audit hook system. The first `mk_audit()` call installs one process-wide audit hook. On Python 3.12 and newer, `sys.monitoring` is also used to raise audit events for non-stdlib native calls, except for native modules declared safe through `fastaudit_safe_native` entry point metadata or handled by packaged monitor hooks. `mk_audit()` creates an audit context, then enables permission checks only while that execution context is active.
+The first `mk_audit()` call installs one process-wide Python audit hook. Each call creates an audit context. Permission checks run only while that context is active.
+
+On Python 3.12 and newer, `sys.monitoring` also raises audit events for non-stdlib native calls. Native modules can declare safe calls through `fastaudit_safe_native` entry points. Packaged monitor hooks can also handle native calls.
 
 `fastaudit` requires Python 3.10 or newer. Native call monitoring requires Python 3.12 or newer and is enabled by default. Pass `monitor_calls=False` to use audit-hook-only mode on Python 3.10/3.11 or to avoid monitoring overhead.
 
 ## Why this exists
 
-LLM-generated code is usually helpful, but sometimes too determined. If a command fails, an assistant may try another route; if a path is wrong, it may broaden the search; if a tool exists, it may use it without fully understanding its side effects.
+An LLM can respond to a failed command by trying another approach or broadening a file search. It can also use an available tool without understanding its side effects. These attempts to complete a task can damage files or start processes the user did not intend.
 
-`fastaudit` is designed for that case.
-
-It helps with:
+`fastaudit` is intended to catch mistakes such as deleting files in the wrong project or writing into a user’s home directory. It helps with:
 
 - blocking subprocess and process-escape operations unless explicitly allowed
 - allowing writes only under approved roots
@@ -23,22 +23,24 @@ It helps with:
 - letting host policy callbacks allow trusted tools while ordinary generated code stays checked
 - avoiding global audit state leaks across async tasks
 
-It deliberately does not try to defeat malicious code running in the same interpreter.
-
 ## Audit hook categorization
 
-The audit hook is designed as a lightweight guardrail for LLM/tool-generated code, not as a hardened security sandbox against malicious code. The goal is to prevent accidental or over-broad filesystem mutation outside approved working directories: e.g. deleting files in the wrong project, writing into a user’s home directory, or spawning subprocesses unexpectedly. It assumes the surrounding process, user account, and pre-existing filesystem layout are trusted, and that the code being checked is not actively trying to exploit races, pre-planted symlinks, or CPython internals.
+The audit hook denies process-escape events such as subprocess execution. It checks filesystem writes and deletions against a precomputed directory allowlist. Most of these operations change directory entries, so the checks apply to parent directories.
 
-The design keeps the common path simple and cheap. Dangerous process-escape events such as subprocess execution are denied outright. Filesystem write/delete events are allowed only when the relevant parent directory is inside a precomputed allowlist, since most mutations are really changes to directory entries. For destination-only operations such as copy, only the destination parent matters; for move/rename/link-style operations, both paths are checked because both filesystem locations may be affected. Read-only operations are generally ignored, and file-descriptor-based truncation is allowed on the assumption that the path policy was enforced when the descriptor was opened. This gives practical protection against accidental damage while avoiding the complexity and cost of pretending to be a fully adversarial sandbox.
+For a destination-only operation such as copy, only the destination's parent is checked. Move, rename, and link operations check both paths because they can affect both locations.
 
-Symlinks are treated as part of the trusted filesystem setup. The hook’s path checks focus on the parent directories of mutations, which is the right model for operations that create, remove, or rename directory entries. This means an existing symlink inside an allowed directory may still point outside the allowed roots; that is acceptable under this threat model because the user controls the workspace layout and is assumed not to pre-place hostile links. To avoid making that assumption worse, symlink and hard-link creation should be restricted: the new link’s parent must be allowed, and the link target should either be denied or required to resolve inside an allowed root.
+The hook generally ignores read-only operations. It allows truncation through a file descriptor on the assumption that opening the descriptor already passed the path check.
+
+The filesystem setup is trusted, including existing symlinks. Parent-directory checks do not prevent a symlink inside an allowed directory from pointing outside the allowed roots. The user controls this layout and is assumed not to have created hostile links.
+
+Restrict symlink and hard-link creation. The new link's parent must be allowed. Either deny link targets or require them to resolve inside an allowed root.
 
 ## Threat model
 
 `fastaudit` assumes:
 
-- the user, workspace, and pre-existing filesystem layout are trusted
-- code is LLM-generated or LLM-directed, not actively hostile
+- the surrounding process, user account, workspace, and pre-existing filesystem layout are trusted
+- code is LLM-generated or LLM-directed, not actively trying to exploit races, pre-planted symlinks, or CPython internals
 - accidental overreach is the main risk
 - rich user tools may need access that ordinary generated code should not have
 - Solveit or the host application controls the execution wrapper
@@ -54,15 +56,19 @@ For adversarial code, use a subprocess, container, VM, or OS-level policy.
 
 ## Audit scope
 
-Auditing is opt-in per logical task. The audit hook is registered globally when the first audit context is created, and the optional call monitor is registered globally when needed, but permission checks only run while `audit_perms()` is active. This matters for async code. A global boolean or counter would leak audit state between unrelated coroutines whenever one audited task awaits. A `ContextVar` gives logical scoping: child tasks inherit at creation time, nested contexts restore cleanly via tokens, and the guard follows execution flow rather than scheduler order. Threads are denied in the audit sandbox since context variables otherwise are not maintained.
+Auditing is opt-in per logical task. The audit hook and optional call monitor are registered globally. Permission checks run only while `audit_perms()` is active.
 
-Entering `audit_perms()` records its origin: thread id, thread name, current asyncio task, and the call chain at entry. When an operation is denied in a different thread or task than the one that entered the context — a leaked or inherited context copy — the error message appends a note saying where the audit context was entered. Same-stack denials omit the note, since their call chain already shows the origin. This makes context propagation problems self-diagnosing: a deny far from its origin names the tool call that created the context.
+A `ContextVar` stores the active audit state. A global boolean or counter would share that state with unrelated coroutines whenever an audited task awaited. Child tasks inherit the context at creation time. Nested contexts restore the previous state through tokens. Audit state therefore follows the task's execution, independently of scheduling order. Threads are restricted because their context variables are not maintained automatically.
 
-The hook is built once inside a closure rather than read from module globals on every event. Allowed roots and callbacks live in the active context config, the event-classification sets are converted to `frozenset`, and the helpers used in the hot path — `realpath`, `dirname`, `fsdecode`, `os.sep` — are captured as local names. Nothing the hook depends on lives in a mutable global that a generated cell could clear, replace, or reassign. This is not a security barrier against introspection or frame walking; it is a deliberate effort to remove the easy, accidental disabling paths that an enthusiastic LLM is most likely to take when retrying after a `PermissionError`.
+Entering `audit_perms()` records the thread id, thread name, current asyncio task, and call chain. If an operation is denied in another thread or task, its error message identifies where the context was entered. This covers inherited or leaked copies of the context. A denial on the same stack omits the extra note because its call chain already identifies the origin.
+
+The hook is constructed once in a closure. Allowed roots and callbacks are stored in the active context's configuration. Event-classification sets use `frozenset`. The hook captures `realpath`, `dirname`, `fsdecode`, and `os.sep` as local names.
+
+The hook does not depend on mutable globals that generated code could clear or replace. This prevents accidental disabling during retries after a `PermissionError`, such as clearing a deny set or replacing a helper. It does not prevent deliberate introspection or frame walking.
 
 ## Permission model
 
-The policy classifies audit events into a few groups:
+The policy classifies audit events into these groups:
 
 - events explicitly allowed
 - events where the first path argument is checked
@@ -77,15 +83,19 @@ Reads are generally allowed.
 
 Subprocess creation and similar process escapes are denied by default.
 
-Most environment-variable updates are allowed. Variables that affect command lookup, Python/import behavior, dynamic loading, virtual environments, home/user identity, shell selection, or temp directories are denied unless `before_deny` allows them.
+Most environment-variable updates are allowed. Updates to sensitive variables require permission from `before_deny`. These variables control command lookup, Python/import behavior, dynamic loading, virtual environments, home/user identity, shell selection, or temporary directories.
 
-Thread creation is denied by default, with one narrow compatibility exception: asyncio may lazily create its default executor thread from `BaseEventLoop.run_in_executor`, for example while resolving DNS. `fastaudit` allows that `asyncio_` worker thread start, but does not allow general user-created threads.
+Thread creation is denied by default. One exception permits asyncio to create its default executor thread from `BaseEventLoop.run_in_executor`, for example during DNS resolution. This permits the `asyncio_` worker thread. It does not permit general user-created threads.
 
-The allowed root `'.'` is dynamic: it means the current directory at the time of each checked operation. This lets a sandbox follow allowed `chdir` calls into child directories. `os.chdir` itself is checked against the destination directory, not the destination's parent.
+The allowed root `'.'` means the current directory at the time of each checked operation. It follows permitted `chdir` calls into child directories. For `os.chdir`, the path check applies to the destination directory itself. It does not check the destination's parent.
 
 Non-stdlib native calls raise a `fastaudit.call` audit event while `audit_perms()` is active when `monitor_calls=True`. Python calls, stdlib calls, safe native entry point prefixes, and packaged monitor-hook suppressions are ignored by the call monitor. With `monitor_calls=False`, only normal Python audit-hook events are checked.
 
-`CALL` instrumentation is only physically enabled while at least one monitoring context is active. Context entry and exit maintain a refcount: the first entry calls `sys.monitoring.set_events()` to turn `CALL` events on, and the last exit turns them off again. Between audit contexts, code objects lazily de-instrument and all code — including native-call-heavy user code whose modules are not declared safe — runs with zero monitoring overhead. Each entry also calls `sys.monitoring.restart_events()` so monitored call sites disabled in an earlier context are seen again inside the new one. Keeping events globally on while any context is active (rather than disabling unmatched call sites from non-audited code) means concurrent non-audited code cannot blind an active context to a shared call site.
+`CALL` instrumentation runs only while at least one monitoring context is active. A reference count tracks context entries and exits. The first entry enables `CALL` events with `sys.monitoring.set_events()`. The last exit disables them.
+
+Between audit contexts, code objects lazily remove instrumentation and run with zero monitoring overhead. This includes code that calls native modules not declared safe. Each context entry calls `sys.monitoring.restart_events()` to re-enable call sites disabled in an earlier context.
+
+Events remain globally enabled while any monitoring context is active. Non-audited code does not disable unmatched call sites. Concurrent non-audited code therefore cannot stop an active context from observing a shared call site.
 
 Native modules can declare safe call prefixes with the `fastaudit_safe_native` entry point group:
 
@@ -106,7 +116,15 @@ mypkg = "mypkg.fastaudit:monitor"
 mypkg = "mypkg.fastaudit:before_deny"
 ```
 
-Monitor hooks use the same signature as `on_call`. Audit hooks use the same signature as `before_deny`. `fastaudit` ships a default `lxml` monitor hook. It does not import `lxml`; it checks callee names, disables ordinary `lxml.` native calls, and leaves the known file writers blocked as `fastaudit.call`: `lxml.etree._ElementTree.write`, `lxml.etree._ElementTree.write_c14n`, `lxml.etree.xmlfile`, `lxml.etree.xmlfile.__enter__`, and `lxml.etree._XSLTResultTree.write_output`.
+Monitor hooks use the `on_call` signature. Audit hooks use the `before_deny` signature.
+
+The bundled `lxml` monitor hook checks callee names without importing `lxml`. It disables monitoring for ordinary `lxml.` native calls. These known file writers remain blocked as `fastaudit.call` events:
+
+- `lxml.etree._ElementTree.write`
+- `lxml.etree._ElementTree.write_c14n`
+- `lxml.etree.xmlfile`
+- `lxml.etree.xmlfile.__enter__`
+- `lxml.etree._XSLTResultTree.write_output`
 
 Some packages have import-time side effects that raise sensitive audit events. For example, a package may set function `__code__` or class `__qualname__` while it is being imported. A package or host can declare those imports trusted:
 
@@ -115,41 +133,64 @@ Some packages have import-time side effects that raise sensitive audit events. F
 mypkg = "mypkg"
 ```
 
-The entries are module prefixes, so `mypkg` also covers `mypkg.submodule`. `fastaudit` does not import these modules when reading metadata. During an audit context, if the stack contains a frame for an allowed module whose `__spec__` is currently initializing, audit events from that import are allowed. Hosts can also pass `allow_imports=('mypkg',)` to `mk_audit()` or call `audit_perms.add_imports('mypkg')` outside the sandbox.
+Entries are module prefixes. For example, `mypkg` includes `mypkg.submodule`. Reading the metadata does not import these modules.
+
+During an audit context, fastaudit checks the stack for a frame belonging to an allowed module. If that module's `__spec__` is initializing, events from the import are permitted. Hosts can also set `allow_imports=('mypkg',)` in `mk_audit()` or call `audit_perms.add_imports('mypkg')` outside the sandbox.
 
 ### get/set attr hooks
 
-The `object.__setattr__` audit event fires only for a small fixed set of "sensitive" attribute assignments, not for general attribute setting. On types/classes, it fires when setting `__name__`, `__qualname__`, `__module__`, `__bases__`, `__doc__`, or `__type_params__` — these go through `check_set_special_type_attr` in `Objects/typeobject.c`. The `__class__` reassignment on any object is also audited, via `object_set_class` in the same file. On function objects, assignments to `__code__`, `__defaults__`, and `__kwdefaults__` are audited, via the relevant setters in `Objects/funcobject.c`.
+The `object.__setattr__` audit event covers a fixed set of sensitive assignments:
 
-All other attribute assignments — including ordinary `C.x = 1` on a class, instance attribute assignment, and even some dunders like `__abstractmethods__` and `__annotations__` (which write directly via `PyDict_SetItem`) — bypass the audit hook entirely. This is why `@dataclass` triggers an event (it sets `cls.__doc__`) and `namedtuple` triggers one (it sets `cls.__module__`), while `class C: pass; C.x = 1; C.foo = lambda self: None` is silent. The authoritative list lives in the CPython source at [`Objects/typeobject.c`](https://github.com/python/cpython/blob/v3.12.0/Objects/typeobject.c) and [`Objects/funcobject.c`](https://github.com/python/cpython/blob/v3.12.0/Objects/funcobject.c); the public docs only describe the event as firing for "certain sensitive attribute assignments" without enumerating them.
+- Setting `__name__`, `__qualname__`, `__module__`, `__bases__`, `__doc__`, or `__type_params__` on a type or class. These use `check_set_special_type_attr` in `Objects/typeobject.c`.
+- Reassigning `__class__` on any object. This uses `object_set_class` in the same file.
+- Setting `__code__`, `__defaults__`, or `__kwdefaults__` on a function. These use the corresponding setters in `Objects/funcobject.c`.
+
+Other attribute assignments bypass the audit hook. These include `C.x = 1`, instance attributes, and dunders such as `__abstractmethods__` and `__annotations__`. The latter write directly through `PyDict_SetItem`.
+
+`@dataclass` triggers an event because it sets `cls.__doc__`. `namedtuple` triggers one because it sets `cls.__module__`. In contrast, `class C: pass; C.x = 1; C.foo = lambda self: None` triggers no event.
+
+The complete list is in CPython's [`Objects/typeobject.c`](https://github.com/python/cpython/blob/v3.12.0/Objects/typeobject.c) and [`Objects/funcobject.c`](https://github.com/python/cpython/blob/v3.12.0/Objects/funcobject.c). The public documentation describes "certain sensitive attribute assignments" without enumerating them.
 
 ## Host policy
 
 Some user-provided tools need permissions that ordinary generated code should not have. For instance, a search tool may need to call `rg`, or a helper may need to spawn a tightly controlled subprocess.
 
-`fastaudit` does not define that policy itself. Host code can pass `before_deny`, which is called after `fastaudit` decides an operation should be blocked and before `PermissionError` is raised:
+The host defines which tools to trust through `before_deny`. fastaudit calls it before raising `PermissionError` for an operation it would otherwise block:
 
 ```python
 before_deny(event, args, frame, msg, data, calls)
 ```
 
-The callback receives the event name, audit arguments, the first non-`fastaudit` stack frame, the error message, the current host data, and currently active tracked calls. Returning a truthy value allows the operation. Returning a falsey value denies it. Exceptions from the callback propagate.
+The callback arguments are:
 
-Audit events that are not in `fastaudit`'s explicit allow or path-check lists also go through `before_deny`. This lets libraries expose their own audit events without needing to depend on `fastaudit`; the host decides which of those events to allow.
+- `event`: the audit event name.
+- `args`: the audit arguments.
+- `frame`: the first stack frame outside fastaudit.
+- `msg`: the error message.
+- `data`: the current host data.
+- `calls`: active tracked calls.
 
-Internally, allowed audit event entries ending in `.` are treated as prefixes, so an allow entry such as `http.client.` covers `http.client.connect` and `http.client.send`.
+A truthy return value allows the operation. A falsey value denies it. Exceptions from the callback propagate.
 
-For other non-stdlib native calls, host code can also pass `on_call`, which runs before `fastaudit.call` is raised. `on_call` requires `monitor_calls=True`:
+Events outside fastaudit's explicit allow and path-check lists also go through `before_deny`. Libraries can define their own audit events without depending on fastaudit. The host decides which events to allow.
+
+Allowed event entries ending in `.` match prefixes. For example, `http.client.` permits `http.client.connect` and `http.client.send`.
+
+For other non-stdlib native calls, pass `on_call` to run a callback before the `fastaudit.call` event. This requires `monitor_calls=True`:
 
 ```python
 on_call(caller, callee, fn, code, off, data, calls)
 ```
 
-It receives the caller, callee, function object, code object, bytecode offset, current host data, and currently active tracked calls. It can return `False` to suppress the audit event for that call, or `sys.monitoring.DISABLE` to disable that monitored call site. Exceptions from the callback propagate.
+Its arguments identify the caller, callee, function object, code object, and bytecode offset. It also receives the current host data and active tracked calls.
 
-The optional `data` argument is stored in the audit context config and passed to both callbacks. A host can build mutable policy state outside the sandbox, pass a frozen snapshot to `mk_audit`, and later update that snapshot with `audit_perms.set_data(...)`. Creating or entering a new audit context, or calling `set_data`, raises an internal audit event and is denied while `audit_perms()` is active.
+Return `False` to suppress the audit event for this call. Return `sys.monitoring.DISABLE` to disable the monitored call site. Exceptions from the callback propagate.
 
-For async tools, the stack may no longer show which trusted function started the work. `track_call` records active wrapped coroutine calls in a `ContextVar`, including the function, args, kwargs, module, qualname, and full name. Non-coroutine functions are returned unchanged:
+The audit context stores the optional `data` argument and passes it to both callbacks. Build mutable policy state outside the sandbox and pass a frozen snapshot to `mk_audit`. Update the snapshot with `audit_perms.set_data(...)`.
+
+Creating or entering an audit context raises an internal audit event. Calling `set_data` also raises one. These operations are denied while `audit_perms()` is active.
+
+An async tool's stack may no longer contain the trusted function that started its work. `track_call` records wrapped coroutine calls in a `ContextVar`. It stores the function, args, kwargs, module, qualname, and full name. Non-coroutine functions are returned unchanged:
 
 ```python
 @track_call
@@ -159,9 +200,9 @@ def before_deny(event, args, frame, msg, data, calls):
     return event=='subprocess.Popen' and any(c.name=='pkg.trusted_tool' for c in calls)
 ```
 
-Finished calls are marked inactive, so copied async contexts in child tasks do not keep stale permissions alive after the wrapped call returns.
+Finished calls are marked inactive. A child task's copied context cannot retain permissions from a wrapped call that has returned.
 
-`audit_state()` returns a small debug snapshot of the closed-over audit state, including `safe_native`, `import_allow`, `monitoring`, `tool_id`, `active`, `monitor_on` (the count of active monitoring contexts), and `monitor_calls`.
+`audit_state()` returns a debug snapshot with `safe_native`, `import_allow`, `monitoring`, `tool_id`, `active`, `monitor_on`, and `monitor_calls`. The `monitor_on` field counts active monitoring contexts.
 
 `mk_audit()` uses `sys.monitoring` tool id `3` by default when call monitoring is enabled. Pass `tool_id=...` if the host already uses that id.
 
@@ -183,9 +224,7 @@ audit_perms = mk_audit(['/tmp'], allow_imports=('trusted_pkg',), monitor_calls=F
 
 ## Implementation notes
 
-The hook should avoid relying on mutable globals during enforcement.
-
-At construction time, bind or freeze:
+When maintaining the hook, bind or freeze these dependencies at construction time:
 
 - approved roots
 - safe native module prefixes from `fastaudit_safe_native` entry points
@@ -196,7 +235,7 @@ At construction time, bind or freeze:
 - frame lookup helper
 - call-monitor helpers and callbacks
 
-This prevents the most likely accidental disabling paths, such as clearing a global deny set or replacing a helper function. The implementation still does not claim to be secure against deliberate frame walking or introspection.
+Keep enforcement independent of mutable globals. This prevents accidental disabling by clearing a deny set or replacing a helper. It does not protect against deliberate frame walking or introspection.
 
 ## Limitations
 
@@ -208,17 +247,11 @@ Known limitations:
 - pre-existing writable file descriptors may bypass path-open checks
 - host callbacks can do anything their implementation permits
 - thread support is intentionally restricted unless explicitly designed for
-- The `CALL` event in `sys.monitoring` does not fire for operators invoked via dedicated bytecode opcodes — `BINARY_OP` (`a + b`), `BINARY_SUBSCR` (`a[i]`), comparisons, etc. These dispatch directly to the C-level numeric/subscript/compare slots, which aren't "calls" in PEP 669's model. Explicit dunder invocations (`a.__add__(b)`) do fire CALL normally.
-
-These limitations are acceptable for a guardrail system aimed at LLM-directed execution. They are not acceptable for hostile code.
-
-## Design principle
-
-The goal is not to make escape impossible. The goal is to make the safe path easy, the risky path explicit, and accidental overreach fail early with a useful error.
+- The `CALL` event in `sys.monitoring` does not fire for operators invoked by dedicated bytecode opcodes. Examples include `BINARY_OP` (`a + b`), `BINARY_SUBSCR` (`a[i]`), and comparisons. They dispatch to C-level numeric, subscript, or comparison slots without a "call" in PEP 669's model. Explicit dunder calls such as `a.__add__(b)` do fire `CALL`.
 
 ## Release
 
-1) Ensure your GitHub issues are labeled (`bug`, `enhancement`, `breaking`). 2) Run:
+Label GitHub issues with `bug`, `enhancement`, or `breaking`. Then run:
 
 ```bash
 ship-gh
