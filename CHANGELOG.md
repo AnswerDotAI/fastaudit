@@ -1,5 +1,11 @@
 <!-- do not remove -->
 
+## 0.2.10
+
+### New Features
+
+- Allow None as roots in `mk_audit` to disable path restrictions ([#27](https://github.com/AnswerDotAI/fastaudit/issues/27))
+
 
 ## 0.2.9
 
