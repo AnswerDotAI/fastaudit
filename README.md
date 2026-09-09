@@ -89,6 +89,8 @@ Thread creation is denied by default. One exception permits asyncio to create it
 
 The allowed root `'.'` means the current directory at the time of each checked operation. It follows permitted `chdir` calls into child directories. For `os.chdir`, the path check applies to the destination directory itself. It does not check the destination's parent.
 
+Pass `None` as the roots argument to `mk_audit` to remove path restrictions. An empty collection permits no paths.
+
 Non-stdlib native calls raise a `fastaudit.call` audit event while `audit_perms()` is active when `monitor_calls=True`. Python calls, stdlib calls, safe native entry point prefixes, and packaged monitor-hook suppressions are ignored by the call monitor. With `monitor_calls=False`, only normal Python audit-hook events are checked.
 
 `CALL` instrumentation runs only while at least one monitoring context is active. A reference count tracks context entries and exits. The first entry enables `CALL` events with `sys.monitoring.set_events()`. The last exit disables them.

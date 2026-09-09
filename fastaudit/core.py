@@ -211,6 +211,7 @@ def _new_state():
         raise PermissionError(msg)
 
     def ok_path(cfg, p, parent=False):
+        if cfg.oks is None: return True
         try:
             p = fsdecode(p)
             if parent: p = dirname(p) or '.'
@@ -315,7 +316,7 @@ def _new_state():
         audit('audit_perms.set_config', oks)
         if on_call and not monitor_calls: raise RuntimeError('on_call requires monitor_calls=True')
         if monitor_calls: install_call_monitor(tool_id)
-        oks = tuple('.' if o=='.' else realpath(os.path.expanduser(fsdecode(o))) for o in oks)
+        if oks is not None: oks = tuple('.' if o=='.' else realpath(os.path.expanduser(fsdecode(o))) for o in oks)
         cfg = _AuditCfg(oks, before_deny, on_call, data, monitor_calls, add_mods(import_allow, allow_imports))
 
         @contextmanager
